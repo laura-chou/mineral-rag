@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import kagglehub
-from langchain_community.document_loaders import DataFrameLoader
+from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama
@@ -12,12 +12,16 @@ from langchain_core.output_parsers import StrOutputParser
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
 
+CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
+METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
+IGNORE_COLS = ['Unnamed: 0', 'count']
+
 def get_or_create_vectorstore(embeddings):
     """
     Checks if Chroma DB exists locally.
     If it exists and contains files, loads it directly.
     Otherwise, checks for local CSV file 'minerals.csv' or falls back to kagglehub download,
-    then processes documents and persists to Chroma DB.
+    then processes documents with categorized text and metadata, and persists to Chroma DB.
     """
     if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
         print("✓ Loading existing vector store from ./chroma_db ...")
@@ -47,19 +51,56 @@ def get_or_create_vectorstore(embeddings):
     df = df.head(100)
     print(f"Sliced top {len(df)} rows for memory optimization.")
 
-    # Data Transformation
-    print("Constructing 'mineral_description' column...")
-    df['mineral_description'] = df.apply(
-        lambda row: f"Mineral Name: {row.get('name', 'N/A')}. "
-                    f"Formula: {row.get('formula', 'N/A')}. "
-                    f"Properties: {row.get('properties', 'N/A')}",
-        axis=1
-    )
+    print("Constructing documents with categorized text, metadata, and dynamic composition...")
+    documents = []
 
-    loader = DataFrameLoader(df, page_content_column="mineral_description")
-    documents = loader.load()
+    # Identify dynamic chemical composition columns
+    dynamic_chem_cols = [
+        col for col in df.columns
+        if col not in CORE_TEXT_COLS and col not in METADATA_COLS and col not in IGNORE_COLS
+    ]
 
-    # Local Embedding & Storage (Direct passage without chunk splitting)
+    for _, row in df.iterrows():
+        # 1. Build Core Text Part
+        core_parts = []
+        for col in CORE_TEXT_COLS:
+            val = row.get(col)
+            if pd.notna(val) and str(val).strip() != "":
+                core_parts.append(f"{col}: {val}")
+
+        # 2. Build Dynamic Chemical Composition Part (> 0)
+        chem_parts = []
+        for col in dynamic_chem_cols:
+            val = row.get(col)
+            if pd.notna(val):
+                try:
+                    num_val = float(val)
+                    if num_val > 0:
+                        chem_parts.append(f"{col}: {num_val}")
+                except ValueError:
+                    continue
+
+        chem_str = ", ".join(chem_parts)
+        if chem_str:
+            core_parts.append(f"Chemical Composition: {chem_str}")
+
+        page_content = ". ".join(core_parts)
+
+        # 3. Build Metadata Dict
+        metadata = {}
+        for col in METADATA_COLS:
+            val = row.get(col)
+            if pd.notna(val) and str(val).strip() != "":
+                if isinstance(val, (int, float, str)):
+                    metadata[col] = val
+                else:
+                    metadata[col] = str(val)
+
+        documents.append(Document(page_content=page_content, metadata=metadata))
+
+    print(f"Created {len(documents)} structured Document objects.")
+
+    # Local Embedding & Storage
     print("Generating HuggingFace embeddings and persisting into Chroma vector store...")
     vectorstore = Chroma.from_documents(
         documents=documents,
