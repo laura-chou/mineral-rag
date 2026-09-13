@@ -5,7 +5,7 @@
 [![Ollama](https://img.shields.io/badge/LLM-Ollama%20(Phi--3)-black?style=flat&logo=ollama&logoColor=white)](https://ollama.ai/)
 [![ChromaDB](https://img.shields.io/badge/VectorStore-ChromaDB-046A38?style=flat)](https://www.trychroma.com/)
 
-An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) system engineered for querying mineralogical data. Powered by LangChain, Ollama (`phi3`), HuggingFace Embeddings (`all-MiniLM-L6-v2`), and ChromaDB, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
+An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) interactive command-line system engineered for querying mineralogical data. Powered by LangChain, Ollama (`phi3`), HuggingFace Embeddings (`all-MiniLM-L6-v2`), and ChromaDB, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
 
 ---
 
@@ -24,19 +24,20 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 
 ## Project Overview
 
-The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via `kagglehub`, transformed into structured text summaries, embedded locally into dense vector spaces, and stored within a persistent Chroma vector database. Upon user query execution, relevant mineral context is retrieved via vector similarity search and fed to a local Phi-3 small language model served by Ollama to synthesize accurate, grounded answers.
+The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via `kagglehub`, transformed into structured text summaries, embedded locally into dense vector spaces, and stored within a persistent Chroma vector database (`./chroma_db`). Upon user query execution, relevant mineral context is retrieved via vector similarity search and fed to a local Phi-3 small language model served by Ollama to synthesize accurate, grounded answers in an interactive CLI loop.
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
-- **Resource-Optimized Pipeline:** Designed to run efficiently on low-resource developer hardware (8GB RAM / 4GB VRAM).
-- **Deterministic Grounding:** Temperature-zero inference paired with strict prompt template constraints prevents hallucinated outputs.
-- **Persistent Storage:** Vectors are saved on local disk, enabling fast subsequent initializations without re-indexing.
+- **Persistent Caching:** Vector embeddings are computed once and cached on disk in `./chroma_db` for near-instantaneous startup on subsequent runs.
+- **Record-Level Preservation:** Documents map 1:1 to mineral records to prevent formula/property truncation across chunk boundaries.
+- **Interactive CLI Interface:** Supports continuous, interactive user prompts with exit handling (`exit` / `quit`).
+- **Strict Guardrails:** Configured to strictly answer from retrieved context and fallback to `"根據現有資料庫，無法回答此問題。"` when context is insufficient.
 
 ---
 
 ## Key Architectural Workflow
 
-The system processes data linearly through an ingestion and chunking pipeline, stores embeddings in a vector database, and executes a deterministic retrieval loop for grounded generation.
+The system processes data linearly through an ingestion pipeline, caches embeddings in a persistent vector database, and executes a deterministic interactive retrieval loop for grounded generation.
 
 ```mermaid
 graph TD
@@ -48,35 +49,36 @@ graph TD
 
     %% Stage 1: Data Ingestion
     subgraph S1 [1. Data Ingestion]
-        A[Start Script] --> B[Download Dataset via kagglehub]
-        B --> C[Load CSV into Pandas DataFrame]
-        C --> D[Slice Top 100 Rows <br><i>Memory Optimization</i>]
+        A[Start Script] --> B{Check Chroma DB Exists?}
+        B -- No --> C[Download Dataset via kagglehub]
+        C --> D[Load CSV into Pandas DataFrame]
+        D --> E[Slice Top 100 Rows <br><i>Memory Optimization</i>]
     end
-    class B,C,D Ingestion;
+    class B,C,D,E Ingestion;
 
     %% Stage 2: Data Transformation
     subgraph S2 [2. Data Transformation]
-        D --> E[Construct 'mineral_description' Column]
-        E --> F[Convert to Documents via DataFrameLoader]
-        F --> G[Split into Chunks via CharacterTextSplitter]
+        E --> F[Construct 'mineral_description' Column]
+        F --> G[Convert to Documents via DataFrameLoader]
     end
-    class E,F,G Transformation;
+    class F,G Transformation;
 
     %% Stage 3: Local Embedding & Storage
     subgraph S3 [3. Local Embedding & Storage]
         G --> H[Generate Vectors via HuggingFace Embeddings <br><i>all-MiniLM-L6-v2</i>]
-        H --> I[(Store in Chroma Vector DB)]
+        H --> I[(Store & Persist in Chroma Vector DB)]
+        B -- Yes --> I
         I --> J[Expose as Retriever <br><i>Search Kwargs: k=3</i>]
     end
     class H,I,J Storage;
 
     %% Stage 4: RAG Retrieval & Inference
     subgraph S4 [4. RAG Retrieval Loop]
-        K[User Query] --> L[Vector Similarity Search]
+        K[Interactive CLI User Prompt] --> L[Vector Similarity Search]
         J -.->|Retrieve Context| L
-        L --> M[Inject Context into ChatPromptTemplate]
+        L --> M[Inject Context & Strict Prompt Guardrails]
         M --> N[Local Inference via Ollama <br><i>Phi-3 LLM</i>]
-        N --> O[Generate Grounded Answer]
+        N --> O[Generate Grounded Answer / Fallback]
     end
     class K,L,M,N,O Inference;
 ```
@@ -124,15 +126,24 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 Install the required packages using `pip`:
 
 ```bash
-pip install pandas langchain langchain-community langchain-chroma langchain-huggingface sentence-transformers kagglehub
+pip install pandas langchain langchain-community langchain-chroma langchain-huggingface langchain-ollama sentence-transformers kagglehub
 ```
 
 ### 2. Run the Application
 
-Execute the main application script:
+Execute the interactive command-line interface:
 
 ```bash
 python app.py
+```
+
+```text
+==================================================
+ 礦物資料庫 RAG 檢索系統 (Mineral RAG CLI)
+==================================================
+系統就緒！可隨時輸入問題。
+
+請輸入您的礦物問題 (輸入 'exit' 或 'quit' 離開): Quartz 的化學式與物理特性是什麼？
 ```
 
 > [!IMPORTANT]
@@ -159,9 +170,8 @@ The system behavior can be tuned by modifying parameters globally inside the run
 
 | Parameter | Default Value | Target Component | Purpose |
 | :--- | :--- | :--- | :--- |
+| `CHROMA_DB_DIR` | `./chroma_db` | Vector Store | Target directory for persisting vector embeddings on disk. |
 | `df.head()` | `100` | Data Preprocessing | Limits initial dataframe rows to fit low-RAM system bounds. |
-| `chunk_size` | `500` | CharacterTextSplitter | Maximum character count per structural text chunk. |
-| `chunk_overlap`| `50` | CharacterTextSplitter | Sliding window overlap to maintain text context between chunks. |
 | `model_name` | `all-MiniLM-L6-v2` | HuggingFaceEmbeddings | Local sentence transformer model for dense vector generation. |
 | `model` | `phi3` | ChatOllama | Target local LLM backend optimized for 4GB VRAM. |
 | `search_kwargs`| `{"k": 3}` | Chroma VectorDB | Number of highly relevant context snippets retrieved per query. |
@@ -171,76 +181,75 @@ The system behavior can be tuned by modifying parameters globally inside the run
 
 ## Implementation Code Snippet
 
-Below is a reference implementation showing how the ingestion, preprocessing, vector storage, and RAG retrieval chain are integrated in `app.py`:
+Below is the complete implementation showing vector caching, prompt guardrails, and interactive CLI in `app.py`:
 
 ```python
 import os
-import kagglehub
 import pandas as pd
+import kagglehub
 from langchain_community.document_loaders import DataFrameLoader
-from langchain_text_splitters import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_community.chat_models import ChatOllama
+from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-# 1. Data Ingestion
-path = kagglehub.dataset_download("paultimothymooney/minerals-dataset")
-csv_file = [os.path.join(path, f) for f in os.listdir(path) if f.endswith('.csv')][0]
-df = pd.read_csv(csv_file)
+CHROMA_DB_DIR = "./chroma_db"
 
-# Memory Optimization: Slice top 100 rows
-df = df.head(100)
+def get_or_create_vectorstore(embeddings):
+    if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
+        print("✓ Loading existing vector store from ./chroma_db ...")
+        return Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
 
-# 2. Data Transformation
-df['mineral_description'] = df.apply(
-    lambda row: f"Mineral Name: {row.get('name', 'N/A')}. "
-                f"Formula: {row.get('formula', 'N/A')}. "
-                f"Properties: {row.get('properties', 'N/A')}",
-    axis=1
-)
+    print("Step 1: Downloading dataset via kagglehub...")
+    path = kagglehub.dataset_download("paultimothymooney/minerals-dataset")
+    csv_file = [os.path.join(path, f) for f in os.listdir(path) if f.endswith('.csv')][0]
+    df = pd.read_csv(csv_file).head(100)
 
-loader = DataFrameLoader(df, page_content_column="mineral_description")
-documents = loader.load()
+    df['mineral_description'] = df.apply(
+        lambda row: f"Mineral Name: {row.get('name', 'N/A')}. "
+                    f"Formula: {row.get('formula', 'N/A')}. "
+                    f"Properties: {row.get('properties', 'N/A')}",
+        axis=1
+    )
 
-text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-docs = text_splitter.split_documents(documents)
+    loader = DataFrameLoader(df, page_content_column="mineral_description")
+    documents = loader.load()
 
-# 3. Local Embedding & Storage
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-vectorstore = Chroma.from_documents(
-    documents=docs,
-    embedding=embeddings,
-    persist_directory="./chroma_db"
-)
-retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    return Chroma.from_documents(documents=documents, embedding=embeddings, persist_directory=CHROMA_DB_DIR)
 
-# 4. RAG Retrieval & Inference Chain
-llm = ChatOllama(model="phi3", temperature=0)
+def main():
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vectorstore = get_or_create_vectorstore(embeddings)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-template = """Answer the question based only on the following context:
+    llm = ChatOllama(model="phi3", temperature=0)
+    template = """Answer the question based ONLY on the following context.
+If the context does not contain enough information, state: "根據現有資料庫，無法回答此問題。"
+
+Context:
 {context}
 
 Question: {question}
 """
-prompt = ChatPromptTemplate.from_template(template)
+    prompt = ChatPromptTemplate.from_template(template)
+    rag_chain = (
+        {"context": retriever | (lambda docs: "\n\n".join(d.page_content for d in docs)), "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
 
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
-
-rag_chain = (
-    {"context": retriever | format_docs, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+    while True:
+        query = input("\n請輸入您的礦物問題 (輸入 'exit' 或 'quit' 離開): ").strip()
+        if query.lower() in ["exit", "quit"]:
+            break
+        if query:
+            print(rag_chain.invoke(query))
 
 if __name__ == "__main__":
-    query = "What are the physical properties and formula of Quartz?"
-    response = rag_chain.invoke(query)
-    print("Response:\n", response)
+    main()
 ```
 
 ---
@@ -248,8 +257,8 @@ if __name__ == "__main__":
 ## Troubleshooting & Performance Notes
 
 > [!IMPORTANT]
-> **Data Slicing Architectural Rationale (`df.head(100)`):**
-> Slicing the dataset to the top 100 rows is an intentional architectural safeguard. Parsing thousands of complex mineralogical descriptions creates large vector indexes and high memory pressure during vector search. Constraining the dataset bounds ensures low-latency similarity retrieval and prevents Out-Of-Memory (OOM) errors on systems with 8GB RAM or 4GB VRAM.
+> **Persistent Caching Advantage:**
+> The system automatically detects existing vector files in `./chroma_db`. Subsequent runs bypass dataset downloading and embedding recalculation completely, reducing initial startup time from minutes to milliseconds.
 
 ### Common Issues & Mitigation
 
@@ -261,6 +270,6 @@ if __name__ == "__main__":
    - **Cause:** The model binary has not been pulled locally.
    - **Solution:** Run `ollama pull phi3` to download the quantized weights (~2.3GB).
 
-3. **High Memory Overhead During Vector Generation**
-   - **Cause:** Large batch sizes in sentence-transformers when processing vast datasets.
-   - **Solution:** Maintain `df.head(100)` or adjust `chunk_size` upwards to decrease total document count.
+3. **Re-generating Vectors on Every Execution**
+   - **Cause:** Deleting or corrupting `./chroma_db`.
+   - **Solution:** Keep `./chroma_db` intact so `app.py` loads cached embeddings directly.
