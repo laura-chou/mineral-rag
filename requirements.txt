@@ -7,3 +7,4 @@ langchain-huggingface
 langchain-ollama
 sentence-transformers
 chromadb
+streamlit

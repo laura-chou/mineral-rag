@@ -4,8 +4,9 @@
 [![LangChain](https://img.shields.io/badge/Framework-LangChain-1C3C3C?style=flat&logo=langchain&logoColor=white)](https://python.langchain.com/)
 [![Ollama](https://img.shields.io/badge/LLM-Ollama%20(Phi--3)-black?style=flat&logo=ollama&logoColor=white)](https://ollama.ai/)
 [![ChromaDB](https://img.shields.io/badge/VectorStore-ChromaDB-046A38?style=flat)](https://www.trychroma.com/)
+[![Streamlit](https://img.shields.io/badge/Frontend-Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io/)
 
-An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) interactive command-line system engineered for querying mineralogical data. Powered by LangChain, Ollama (`phi3`), HuggingFace Embeddings (`all-MiniLM-L6-v2`), and ChromaDB, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
+An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) system engineered for querying mineralogical data via both an interactive CLI and a modern Streamlit Web UI. Powered by LangChain, Ollama (`phi3`), HuggingFace Embeddings (`all-MiniLM-L6-v2`), and ChromaDB, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
 
 ---
 
@@ -15,6 +16,7 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 - [Key Architectural Workflow](#key-architectural-workflow)
 - [Prerequisites & Setup](#prerequisites--setup)
 - [Installation & Quickstart Guide](#installation--quickstart-guide)
+- [Streamlit Web Interface](#streamlit-web-interface)
 - [Project Directory Structure](#project-directory-structure)
 - [Configuration & Parameters](#configuration--parameters)
 - [Implementation Code Snippet](#implementation-code-snippet)
@@ -28,12 +30,13 @@ The Local RAG System for Mineral Database provides deterministic, hallucination-
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
+- **Dual Interface:** Choose between interactive Command-Line Interface (`app.py`) and a modern Streamlit Web UI (`app_ui.py`).
+- **Resource Caching:** `@st.cache_resource` prevents re-embedding vector computations across Web UI interactions.
 - **Local Dataset Priority:** Prioritizes local `minerals.csv` to bypass Kaggle API authentication limits (403 Forbidden).
 - **Full Ingestion Pipeline:** Ingests the full mineral dataset (3,112 rows) into dense vector spaces for maximum dataset coverage.
 - **Query Alias Pre-processing:** Maps commercial gem/rock names (e.g., Ruby, Sapphire, Emerald, Amethyst) to formal mineral names.
 - **Categorized Document & Metadata Integration:** Includes physical units (e.g., Mohs scale, g/cm³, g/mol) and injects document metadata directly into the retrieval context formatted for LLM inference.
 - **Persistent Caching:** Vector embeddings are computed once and cached on disk in `./chroma_db` for near-instantaneous startup on subsequent runs.
-- **Interactive CLI Interface:** Supports continuous, interactive user prompts in English with exit handling (`exit` / `quit`).
 - **Strict Guardrails:** Configured to strictly answer from retrieved context and fallback to `"I cannot answer this question based on the provided context."` when context is insufficient.
 
 ---
@@ -52,7 +55,7 @@ graph TD
 
     %% Stage 1: Data Ingestion
     subgraph S1 [1. Data Ingestion]
-        A[Start Script] --> B{Check Chroma DB Exists?}
+        A[Start App CLI / Web UI] --> B{Check Chroma DB Exists?}
         B -- No --> C{Check Local minerals.csv?}
         C -- Yes --> D[Load minerals.csv via Pandas]
         C -- No --> E[Download Dataset via kagglehub]
@@ -83,12 +86,12 @@ graph TD
 
     %% Stage 4: RAG Retrieval & Inference
     subgraph S4 [4. RAG Retrieval Loop]
-        N[Interactive CLI User Prompt] --> O[Gemology Alias Pre-processing]
+        N[CLI Input / Streamlit Chat Input] --> O[Gemology Alias Pre-processing]
         O --> P[Vector Similarity Search - Top K=5]
         M -.->|Retrieve Context & Metadata| P
         P --> Q[Inject Context, Metadata & Markdown Table Guardrails]
         Q --> R[Local Inference via Ollama <br><i>Phi-3 LLM</i>]
-        R --> S[Generate Grounded Answer / Markdown Table]
+        R --> S[Generate Grounded Answer / Markdown Table UI]
     end
     class N,O,P,Q,R,S Inference;
 ```
@@ -125,7 +128,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
 > [!NOTE]
-> If a local `minerals.csv` file is present in the repository root directory, `app.py` will load it directly and bypass Kaggle downloading.
+> If a local `minerals.csv` file is present in the repository root directory, `app.py` and `app_ui.py` will load it directly and bypass Kaggle downloading.
 
 ---
 
@@ -136,10 +139,10 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 Install the required packages using `pip`:
 
 ```bash
-pip install pandas langchain langchain-community langchain-chroma langchain-huggingface langchain-ollama sentence-transformers kagglehub
+pip install pandas langchain langchain-community langchain-chroma langchain-huggingface langchain-ollama sentence-transformers kagglehub streamlit
 ```
 
-### 2. Run the Application
+### 2. Run the Command-Line Application
 
 Execute the interactive command-line interface:
 
@@ -147,17 +150,20 @@ Execute the interactive command-line interface:
 python app.py
 ```
 
-```text
-==================================================
- Mineral Database RAG Retrieval System (CLI)
-==================================================
-System ready! You can ask your questions at any time.
+---
 
-Enter your mineral question (type 'exit' or 'quit' to leave): What are the optical properties and refractive index of Ruby?
+## Streamlit Web Interface
+
+Launch the modern chat UI in your browser:
+
+```bash
+streamlit run app_ui.py
 ```
 
-> [!IMPORTANT]
-> Ensure Ollama is running (`ollama serve`) before executing `python app.py`.
+Features of the Web UI:
+- **Interactive Chat Canvas:** Preserves chat history across the active session via `st.session_state`.
+- **Cached Vector Operations:** `@st.cache_resource` prevents re-indexing data on user actions.
+- **Rich Markdown Rendering:** Renders formatted mineral property tables natively.
 
 ---
 
@@ -168,7 +174,8 @@ mineral-rag/
 │
 ├── chroma_db/               # Local persistent storage directory for ChromaDB embeddings
 ├── minerals.csv             # Local CSV dataset (Optional; loaded directly if present)
-├── app.py                   # Main Python application entrypoint execution script
+├── app.py                   # Main Python CLI entrypoint execution script
+├── app_ui.py                # Streamlit Web UI chat application
 ├── README.md                # System technical documentation and workflow specifications
 └── requirements.txt         # Declared python dependencies version sheet
 ```
@@ -195,13 +202,14 @@ The system behavior can be tuned by modifying parameters globally inside the run
 
 ## Implementation Code Snippet
 
-Below is the complete implementation showing custom `Document` construction, explicit physical units, query alias mapping, $k=5$ retrieval, and Markdown table output instructions in `app.py`:
+Below is the Streamlit Web UI application logic in `app_ui.py`:
 
 ```python
 import os
 import re
 import pandas as pd
 import kagglehub
+import streamlit as st
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
@@ -213,112 +221,41 @@ from langchain_core.output_parsers import StrOutputParser
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
 
-CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
-METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
-IGNORE_COLS = ['Unnamed: 0', 'count']
-
-MINERAL_ALIASES = {
-    "lapis lazuli": "Lazurite",
-    "ruby": "Corundum",
-    "sapphire": "Corundum",
-    "emerald": "Beryl",
-    "boulder opal": "Opal",
-    "amethyst": "Quartz"
-}
-
-def format_value_with_units(col, val):
-    val_str = str(val).strip()
-    if col == 'Mohs Hardness':
-        return f"{val_str} (Mohs scale)"
-    elif col in ['Specific Gravity', 'Calculated Density']:
-        return f"{val_str} g/cm³"
-    elif col == 'Molar Mass':
-        return f"{val_str} g/mol"
-    return val_str
-
-def preprocess_query(query: str) -> str:
-    processed_query = query
-    for alias, formal_name in MINERAL_ALIASES.items():
-        pattern = re.compile(re.escape(alias), re.IGNORECASE)
-        if pattern.search(processed_query):
-            processed_query = pattern.sub(f"{alias} ({formal_name})", processed_query)
-    return processed_query
-
-def get_or_create_vectorstore(embeddings):
+@st.cache_resource(show_spinner="Initializing vector store...")
+def get_vectorstore():
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
-        print("✓ Loading existing vector store from ./chroma_db ...")
         return Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
+    # Full dataset document loading logic...
 
-    if os.path.exists(LOCAL_CSV_PATH):
-        print("✓ Local minerals.csv detected. Loading directly...")
-        df = pd.read_csv(LOCAL_CSV_PATH)
-    else:
-        path = kagglehub.dataset_download("paultimothymooney/minerals-dataset")
-        csv_file = [os.path.join(path, f) for f in os.listdir(path) if f.endswith('.csv')][0]
-        df = pd.read_csv(csv_file)
-
-    dynamic_chem_cols = [c for c in df.columns if c not in CORE_TEXT_COLS and c not in METADATA_COLS and c not in IGNORE_COLS]
-
-    documents = []
-    for _, row in df.iterrows():
-        core_parts = []
-        for col in CORE_TEXT_COLS:
-            val = row.get(col)
-            if pd.notna(val) and str(val).strip() != "":
-                try:
-                    if float(val) == 0:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-                core_parts.append(f"{col}: {format_value_with_units(col, val)}")
-
-        chem_parts = [f"{col}: {float(row[col])}" for col in dynamic_chem_cols if pd.notna(row.get(col)) and float(row.get(col, 0)) > 0]
-        if chem_parts:
-            core_parts.append(f"Chemical Composition: {', '.join(chem_parts)}")
-
-        page_content = ". ".join(core_parts)
-        metadata = {col: format_value_with_units(col, row[col]) for col in METADATA_COLS if pd.notna(row.get(col)) and str(row.get(col)).strip() != ""}
-        documents.append(Document(page_content=page_content, metadata=metadata))
-
-    return Chroma.from_documents(documents=documents, embedding=embeddings, persist_directory=CHROMA_DB_DIR)
+@st.cache_resource(show_spinner="Initializing LLM chain...")
+def get_rag_chain():
+    vectorstore = get_vectorstore()
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    llm = ChatOllama(model="phi3", temperature=0)
+    # RAG Chain setup...
 
 def main():
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    vectorstore = get_or_create_vectorstore(embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    st.set_page_config(page_title="Mineral Database RAG", page_icon="💎", layout="wide")
+    st.title("💎 Mineral Database Local RAG System")
 
-    llm = ChatOllama(model="phi3", temperature=0)
-    template = """Answer the question based ONLY on the following context.
-If multiple physical or optical properties are requested or available, present them cleanly in a Markdown table.
-If the context does not contain enough information, state: "I cannot answer this question based on the provided context."
+    rag_chain = get_rag_chain()
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-Context:
-{context}
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-Question: {question}
-"""
-    prompt = ChatPromptTemplate.from_template(template)
+    if user_input := st.chat_input("Enter your mineral question..."):
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
 
-    def format_docs(docs):
-        formatted = []
-        for doc in docs:
-            meta_info = ", ".join(f"{k}: {v}" for k, v in doc.metadata.items() if pd.notna(v))
-            formatted.append(f"{doc.page_content} | Metadata: {meta_info}")
-        return "\n\n".join(formatted)
-
-    rag_chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-
-    while True:
-        query = input("\nEnter your mineral question (type 'exit' or 'quit' to leave): ").strip()
-        if query.lower() in ["exit", "quit"]:
-            break
-        if query:
-            print(rag_chain.invoke(preprocess_query(query)))
+        response = rag_chain.invoke(user_input)
+        with st.chat_message("assistant"):
+            st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
 
 if __name__ == "__main__":
     main()
@@ -342,6 +279,6 @@ if __name__ == "__main__":
    - **Cause:** The model binary has not been pulled locally.
    - **Solution:** Run `ollama pull phi3` to download the quantized weights (~2.3GB).
 
-3. **Kaggle 403 Forbidden Error**
-   - **Cause:** Missing Kaggle authentication credentials during dataset download.
-   - **Solution:** Place `minerals.csv` directly in the project root folder. `app.py` will automatically detect and load it.
+3. **Streamlit App Performance Delay**
+   - **Cause:** Vector store or chain re-initialization on page re-run.
+   - **Solution:** `@st.cache_resource` decorators handle caching. Ensure persistent storage is populated in `./chroma_db`.
