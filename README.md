@@ -24,12 +24,14 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 
 ## Project Overview
 
-The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with categorized text fields, metadata dictionaries, and dynamic chemical composition elements (> 0), embedded locally into dense vector spaces, and stored within a persistent Chroma vector database (`./chroma_db`). Upon user query execution, relevant mineral context is retrieved via vector similarity search and fed to a local Phi-3 small language model served by Ollama to synthesize accurate, grounded answers in an interactive CLI loop.
+The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and dynamic chemical composition elements (> 0), embedded locally into dense vector spaces, and stored within a persistent Chroma vector database (`./chroma_db`). Upon user query execution, relevant mineral context is retrieved via vector similarity search ($k=5$) and fed to a local Phi-3 small language model served by Ollama to synthesize accurate, grounded answers formatted in Markdown tables when appropriate.
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
 - **Local Dataset Priority:** Prioritizes local `minerals.csv` to bypass Kaggle API authentication limits (403 Forbidden).
-- **Categorized Document Construction:** Maps core physical/optical properties into `page_content` and numerical properties into `metadata` with dynamic chemical element filtering.
+- **Full Ingestion Pipeline:** Ingests the full mineral dataset (3,112 rows) into dense vector spaces for maximum dataset coverage.
+- **Query Alias Pre-processing:** Maps commercial gem/rock names (e.g., Ruby, Sapphire, Emerald, Amethyst) to formal mineral names.
+- **Categorized Document & Metadata Integration:** Includes physical units (e.g., Mohs scale, g/cm³, g/mol) and injects document metadata directly into the retrieval context formatted for LLM inference.
 - **Persistent Caching:** Vector embeddings are computed once and cached on disk in `./chroma_db` for near-instantaneous startup on subsequent runs.
 - **Interactive CLI Interface:** Supports continuous, interactive user prompts in English with exit handling (`exit` / `quit`).
 - **Strict Guardrails:** Configured to strictly answer from retrieved context and fallback to `"I cannot answer this question based on the provided context."` when context is insufficient.
@@ -55,15 +57,15 @@ graph TD
         C -- Yes --> D[Load minerals.csv via Pandas]
         C -- No --> E[Download Dataset via kagglehub]
         E --> D
-        D --> F[Slice Top 100 Rows <br><i>Memory Optimization</i>]
+        D --> F[Process Full Dataset - 3,112 Rows]
     end
     class B,C,D,E,F Ingestion;
 
     %% Stage 2: Data Transformation
     subgraph S2 [2. Data Transformation]
-        F --> G[Extract CORE_TEXT_COLS]
+        F --> G[Extract CORE_TEXT_COLS + Units]
         F --> H[Filter Dynamic Chemical Elements > 0]
-        F --> I[Extract METADATA_COLS]
+        F --> I[Extract METADATA_COLS + Units]
         G --> J[Construct Document Objects]
         H --> J
         I --> J
@@ -75,19 +77,20 @@ graph TD
         J --> K[Generate Vectors via HuggingFace Embeddings <br><i>all-MiniLM-L6-v2</i>]
         K --> L[(Store & Persist in Chroma Vector DB)]
         B -- Yes --> L
-        L --> M[Expose as Retriever <br><i>Search Kwargs: k=3</i>]
+        L --> M[Expose as Retriever <br><i>Search Kwargs: k=5</i>]
     end
     class K,L,M Storage;
 
     %% Stage 4: RAG Retrieval & Inference
     subgraph S4 [4. RAG Retrieval Loop]
-        N[Interactive CLI User Prompt] --> O[Vector Similarity Search]
-        M -.->|Retrieve Context| O
-        O --> P[Inject Context & Strict Prompt Guardrails]
-        P --> Q[Local Inference via Ollama <br><i>Phi-3 LLM</i>]
-        Q --> R[Generate Grounded Answer / Fallback]
+        N[Interactive CLI User Prompt] --> O[Gemology Alias Pre-processing]
+        O --> P[Vector Similarity Search - Top K=5]
+        M -.->|Retrieve Context & Metadata| P
+        P --> Q[Inject Context, Metadata & Markdown Table Guardrails]
+        Q --> R[Local Inference via Ollama <br><i>Phi-3 LLM</i>]
+        R --> S[Generate Grounded Answer / Markdown Table]
     end
-    class N,O,P,Q,R Inference;
+    class N,O,P,Q,R,S Inference;
 ```
 
 ---
@@ -150,7 +153,7 @@ python app.py
 ==================================================
 System ready! You can ask your questions at any time.
 
-Enter your mineral question (type 'exit' or 'quit' to leave): What are the optical properties and refractive index of Quartz?
+Enter your mineral question (type 'exit' or 'quit' to leave): What are the optical properties and refractive index of Ruby?
 ```
 
 > [!IMPORTANT]
@@ -180,22 +183,23 @@ The system behavior can be tuned by modifying parameters globally inside the run
 | :--- | :--- | :--- | :--- |
 | `CHROMA_DB_DIR` | `./chroma_db` | Vector Store | Target directory for persisting vector embeddings on disk. |
 | `LOCAL_CSV_PATH` | `minerals.csv` | Data Ingestion | Path to local CSV file to prioritize over Kaggle download. |
-| `CORE_TEXT_COLS` | `['Name', 'Crystal Structure', ...]` | Document Construction | Core physical properties combined into document `page_content`. |
-| `METADATA_COLS` | `['Mohs Hardness', 'Specific Gravity', ...]` | Document Construction | Key numerical attributes stored in document `metadata`. |
-| `df.head()` | `100` | Data Preprocessing | Limits initial dataframe rows to fit low-RAM system bounds. |
+| `CORE_TEXT_COLS` | `['Name', 'Crystal Structure', 'Mohs Hardness', ...]` | Document Construction | Core physical/optical properties embedded into `page_content`. |
+| `METADATA_COLS` | `['Name', 'Mohs Hardness', 'Specific Gravity', ...]` | Document Construction | Attributes stored in document `metadata` and injected in context. |
+| `MINERAL_ALIASES` | `{"ruby": "Corundum", ...}` | Query Preprocessor | Maps commercial gem/rock names to formal mineral names. |
 | `model_name` | `all-MiniLM-L6-v2` | HuggingFaceEmbeddings | Local sentence transformer model for dense vector generation. |
 | `model` | `phi3` | ChatOllama | Target local LLM backend optimized for 4GB VRAM. |
-| `search_kwargs`| `{"k": 3}` | Chroma VectorDB | Number of highly relevant context snippets retrieved per query. |
+| `search_kwargs`| `{"k": 5}` | Chroma VectorDB | Number of top relevant document snippets retrieved per query. |
 | `temperature`  | `0` | ChatOllama LLM | Set to zero to eliminate creative hallucinations and enforce deterministic output. |
 
 ---
 
 ## Implementation Code Snippet
 
-Below is the complete implementation showing custom `Document` construction, dynamic chemical element filtering, vector caching, prompt guardrails, and interactive CLI in `app.py`:
+Below is the complete implementation showing custom `Document` construction, explicit physical units, query alias mapping, $k=5$ retrieval, and Markdown table output instructions in `app.py`:
 
 ```python
 import os
+import re
 import pandas as pd
 import kagglehub
 from langchain_core.documents import Document
@@ -209,9 +213,36 @@ from langchain_core.output_parsers import StrOutputParser
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
 
-CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
+CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
 METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
 IGNORE_COLS = ['Unnamed: 0', 'count']
+
+MINERAL_ALIASES = {
+    "lapis lazuli": "Lazurite",
+    "ruby": "Corundum",
+    "sapphire": "Corundum",
+    "emerald": "Beryl",
+    "boulder opal": "Opal",
+    "amethyst": "Quartz"
+}
+
+def format_value_with_units(col, val):
+    val_str = str(val).strip()
+    if col == 'Mohs Hardness':
+        return f"{val_str} (Mohs scale)"
+    elif col in ['Specific Gravity', 'Calculated Density']:
+        return f"{val_str} g/cm³"
+    elif col == 'Molar Mass':
+        return f"{val_str} g/mol"
+    return val_str
+
+def preprocess_query(query: str) -> str:
+    processed_query = query
+    for alias, formal_name in MINERAL_ALIASES.items():
+        pattern = re.compile(re.escape(alias), re.IGNORECASE)
+        if pattern.search(processed_query):
+            processed_query = pattern.sub(f"{alias} ({formal_name})", processed_query)
+    return processed_query
 
 def get_or_create_vectorstore(embeddings):
     if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
@@ -226,18 +257,27 @@ def get_or_create_vectorstore(embeddings):
         csv_file = [os.path.join(path, f) for f in os.listdir(path) if f.endswith('.csv')][0]
         df = pd.read_csv(csv_file)
 
-    df = df.head(100)
     dynamic_chem_cols = [c for c in df.columns if c not in CORE_TEXT_COLS and c not in METADATA_COLS and c not in IGNORE_COLS]
 
     documents = []
     for _, row in df.iterrows():
-        core_parts = [f"{col}: {row[col]}" for col in CORE_TEXT_COLS if pd.notna(row.get(col)) and str(row.get(col)).strip() != ""]
+        core_parts = []
+        for col in CORE_TEXT_COLS:
+            val = row.get(col)
+            if pd.notna(val) and str(val).strip() != "":
+                try:
+                    if float(val) == 0:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+                core_parts.append(f"{col}: {format_value_with_units(col, val)}")
+
         chem_parts = [f"{col}: {float(row[col])}" for col in dynamic_chem_cols if pd.notna(row.get(col)) and float(row.get(col, 0)) > 0]
         if chem_parts:
             core_parts.append(f"Chemical Composition: {', '.join(chem_parts)}")
 
         page_content = ". ".join(core_parts)
-        metadata = {col: row[col] for col in METADATA_COLS if pd.notna(row.get(col)) and str(row.get(col)).strip() != ""}
+        metadata = {col: format_value_with_units(col, row[col]) for col in METADATA_COLS if pd.notna(row.get(col)) and str(row.get(col)).strip() != ""}
         documents.append(Document(page_content=page_content, metadata=metadata))
 
     return Chroma.from_documents(documents=documents, embedding=embeddings, persist_directory=CHROMA_DB_DIR)
@@ -245,10 +285,11 @@ def get_or_create_vectorstore(embeddings):
 def main():
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     vectorstore = get_or_create_vectorstore(embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
     llm = ChatOllama(model="phi3", temperature=0)
     template = """Answer the question based ONLY on the following context.
+If multiple physical or optical properties are requested or available, present them cleanly in a Markdown table.
 If the context does not contain enough information, state: "I cannot answer this question based on the provided context."
 
 Context:
@@ -257,8 +298,16 @@ Context:
 Question: {question}
 """
     prompt = ChatPromptTemplate.from_template(template)
+
+    def format_docs(docs):
+        formatted = []
+        for doc in docs:
+            meta_info = ", ".join(f"{k}: {v}" for k, v in doc.metadata.items() if pd.notna(v))
+            formatted.append(f"{doc.page_content} | Metadata: {meta_info}")
+        return "\n\n".join(formatted)
+
     rag_chain = (
-        {"context": retriever | (lambda docs: "\n\n".join(d.page_content for d in docs)), "question": RunnablePassthrough()}
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()
@@ -269,7 +318,7 @@ Question: {question}
         if query.lower() in ["exit", "quit"]:
             break
         if query:
-            print(rag_chain.invoke(query))
+            print(rag_chain.invoke(preprocess_query(query)))
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,5 @@
 import os
+import re
 import pandas as pd
 import kagglehub
 from langchain_core.documents import Document
@@ -12,16 +13,45 @@ from langchain_core.output_parsers import StrOutputParser
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
 
-CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
+CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
 METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
 IGNORE_COLS = ['Unnamed: 0', 'count']
+
+MINERAL_ALIASES = {
+    "lapis lazuli": "Lazurite",
+    "ruby": "Corundum",
+    "sapphire": "Corundum",
+    "emerald": "Beryl",
+    "boulder opal": "Opal",
+    "amethyst": "Quartz"
+}
+
+def format_value_with_units(col, val):
+    """Appends explicit physical units to relevant numerical mineral properties."""
+    val_str = str(val).strip()
+    if col == 'Mohs Hardness':
+        return f"{val_str} (Mohs scale)"
+    elif col in ['Specific Gravity', 'Calculated Density']:
+        return f"{val_str} g/cm³"
+    elif col == 'Molar Mass':
+        return f"{val_str} g/mol"
+    return val_str
+
+def preprocess_query(query: str) -> str:
+    """Pre-processes user query by mapping commercial gem/rock aliases to formal mineral names."""
+    processed_query = query
+    for alias, formal_name in MINERAL_ALIASES.items():
+        pattern = re.compile(re.escape(alias), re.IGNORECASE)
+        if pattern.search(processed_query):
+            processed_query = pattern.sub(f"{alias} ({formal_name})", processed_query)
+    return processed_query
 
 def get_or_create_vectorstore(embeddings):
     """
     Checks if Chroma DB exists locally.
     If it exists and contains files, loads it directly.
-    Otherwise, checks for local CSV file 'minerals.csv' or falls back to kagglehub download,
-    then processes documents with categorized text and metadata, and persists to Chroma DB.
+    Otherwise, loads local minerals.csv or downloads via kagglehub,
+    processes full dataset documents with categorized text and units, and persists to Chroma DB.
     """
     if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
         print("✓ Loading existing vector store from ./chroma_db ...")
@@ -45,13 +75,9 @@ def get_or_create_vectorstore(embeddings):
         csv_file = csv_files[0]
         df = pd.read_csv(csv_file)
 
-    print(f"Loaded dataset with total {len(df)} rows.")
+    print(f"Loaded full dataset with total {len(df)} rows.")
 
-    # Memory Optimization: Slice top 100 rows
-    df = df.head(100)
-    print(f"Sliced top {len(df)} rows for memory optimization.")
-
-    print("Constructing documents with categorized text, metadata, and dynamic composition...")
+    print("Constructing documents with categorized text, units, metadata, and dynamic composition...")
     documents = []
 
     # Identify dynamic chemical composition columns
@@ -71,7 +97,8 @@ def get_or_create_vectorstore(embeddings):
                         continue
                 except (ValueError, TypeError):
                     pass
-                core_parts.append(f"{col}: {val}")
+                formatted_val = format_value_with_units(col, val)
+                core_parts.append(f"{col}: {formatted_val}")
 
         # 2. Build Dynamic Chemical Composition Part (> 0)
         chem_parts = []
@@ -91,15 +118,16 @@ def get_or_create_vectorstore(embeddings):
 
         page_content = ". ".join(core_parts)
 
-        # 3. Build Metadata Dict
+        # 3. Build Metadata Dict with units
         metadata = {}
         for col in METADATA_COLS:
             val = row.get(col)
             if pd.notna(val) and str(val).strip() != "":
-                if isinstance(val, (int, float, str)):
-                    metadata[col] = val
+                formatted_val = format_value_with_units(col, val)
+                if isinstance(formatted_val, (int, float, str)):
+                    metadata[col] = formatted_val
                 else:
-                    metadata[col] = str(val)
+                    metadata[col] = str(formatted_val)
 
         documents.append(Document(page_content=page_content, metadata=metadata))
 
@@ -119,14 +147,15 @@ def get_or_create_vectorstore(embeddings):
 def main():
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     vectorstore = get_or_create_vectorstore(embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
-    # RAG Retrieval Loop & Inference Chain with Strict Guardrails
+    # RAG Retrieval Loop & Inference Chain with Strict Guardrails and Markdown Table Formatting
     print("Initializing ChatOllama Phi-3 LLM chain...")
     llm = ChatOllama(model="phi3", temperature=0)
 
     template = """You are an expert assistant for a mineral database.
 Answer the question based ONLY on the following provided context.
+If multiple physical or optical properties are requested or available, present them cleanly in a Markdown table.
 If the context does not contain enough information to answer the question, explicitly state:
 "I cannot answer this question based on the provided context."
 Do not invent or extrapolate any information beyond what is strictly stated in the context.
@@ -139,7 +168,11 @@ Question: {question}
     prompt = ChatPromptTemplate.from_template(template)
 
     def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
+        formatted = []
+        for doc in docs:
+            meta_info = ", ".join(f"{k}: {v}" for k, v in doc.metadata.items() if pd.notna(v))
+            formatted.append(f"{doc.page_content} | Metadata: {meta_info}")
+        return "\n\n".join(formatted)
 
     rag_chain = (
         {"context": retriever | format_docs, "question": RunnablePassthrough()}
@@ -162,8 +195,9 @@ Question: {question}
                 print("\nThank you for using the Mineral RAG system. Goodbye!")
                 break
 
-            print("\nSearching...")
-            response = rag_chain.invoke(user_input)
+            processed_query = preprocess_query(user_input)
+            print(f"\nSearching for: {processed_query}...")
+            response = rag_chain.invoke(processed_query)
             print("\nResponse:")
             print(response)
         except KeyboardInterrupt:
