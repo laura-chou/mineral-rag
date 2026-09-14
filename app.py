@@ -61,11 +61,16 @@ def get_or_create_vectorstore(embeddings):
     ]
 
     for _, row in df.iterrows():
-        # 1. Build Core Text Part
+        # 1. Build Core Text Part (skipping NaN, empty strings, and zero values)
         core_parts = []
         for col in CORE_TEXT_COLS:
             val = row.get(col)
             if pd.notna(val) and str(val).strip() != "":
+                try:
+                    if float(val) == 0:
+                        continue
+                except (ValueError, TypeError):
+                    pass
                 core_parts.append(f"{col}: {val}")
 
         # 2. Build Dynamic Chemical Composition Part (> 0)
@@ -77,7 +82,7 @@ def get_or_create_vectorstore(embeddings):
                     num_val = float(val)
                     if num_val > 0:
                         chem_parts.append(f"{col}: {num_val}")
-                except ValueError:
+                except (ValueError, TypeError):
                     continue
 
         chem_str = ", ".join(chem_parts)
@@ -108,6 +113,7 @@ def get_or_create_vectorstore(embeddings):
         persist_directory=CHROMA_DB_DIR
     )
     print("✓ Chroma DB successfully created and persisted.")
+    print("✓ Vector store updated with non-zero filtered properties.")
     return vectorstore
 
 def main():
