@@ -56,7 +56,8 @@ def get_vectorstore():
         try:
             vectorstore = Chroma(
                 persist_directory=CHROMA_DB_DIR,
-                embedding_function=embeddings
+                embedding_function=embeddings,
+                collection_metadata={"hnsw:space": "cosine"}
             )
             _ = vectorstore.similarity_search("test", k=1)
             return vectorstore
@@ -121,7 +122,8 @@ def get_vectorstore():
     return Chroma.from_documents(
         documents=documents,
         embedding=embeddings,
-        persist_directory=CHROMA_DB_DIR
+        persist_directory=CHROMA_DB_DIR,
+        collection_metadata={"hnsw:space": "cosine"}
     )
 
 def format_docs(docs):
@@ -135,7 +137,7 @@ def format_docs(docs):
 def get_rag_components():
     vectorstore = get_vectorstore()
 
-    # 1. Similarity score threshold retriever (threshold: 0.4, k: 3)
+    # 1. Similarity score threshold retriever (threshold: 0.4, k: 3) using cosine distance space
     retriever = vectorstore.as_retriever(
         search_type="similarity_score_threshold",
         search_kwargs={"score_threshold": 0.4, "k": 3}

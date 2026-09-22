@@ -52,17 +52,18 @@ def get_or_create_vectorstore(embeddings):
     """
     Checks if Chroma DB exists locally and tests embedding dimension compatibility.
     If incompatible or missing, rebuilds the vector store using local minerals.csv or kagglehub.
-    Uses column J (idx 9) to EE (idx 135) for chemical composition attributes.
+    Uses collection_metadata={"hnsw:space": "cosine"} to enforce cosine similarity relevance scoring.
     """
     if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
         print("✓ Checking existing vector store in ./chroma_db ...")
         try:
             vectorstore = Chroma(
                 persist_directory=CHROMA_DB_DIR,
-                embedding_function=embeddings
+                embedding_function=embeddings,
+                collection_metadata={"hnsw:space": "cosine"}
             )
             _ = vectorstore.similarity_search("test", k=1)
-            print("✓ Vector store loaded successfully and dimension verified.")
+            print("✓ Vector store loaded successfully with cosine distance metric.")
             return vectorstore
         except Exception as e:
             print(f"⚠️ Vector store dimension mismatch or corruption detected ({e}). Removing old database...")
@@ -133,13 +134,14 @@ def get_or_create_vectorstore(embeddings):
 
     print(f"Created {len(documents)} structured Document objects.")
 
-    print("Generating multilingual HuggingFace embeddings and persisting into Chroma vector store...")
+    print("Generating multilingual HuggingFace embeddings and persisting into Chroma vector store with Cosine space...")
     vectorstore = Chroma.from_documents(
         documents=documents,
         embedding=embeddings,
-        persist_directory=CHROMA_DB_DIR
+        persist_directory=CHROMA_DB_DIR,
+        collection_metadata={"hnsw:space": "cosine"}
     )
-    print("✓ Multilingual Chroma DB successfully created and persisted.")
+    print("✓ Multilingual Chroma DB successfully created and persisted with cosine similarity metric.")
     return vectorstore
 
 def format_docs(docs):
@@ -153,7 +155,7 @@ def main():
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     vectorstore = get_or_create_vectorstore(embeddings)
 
-    # 1. Similarity score threshold retriever (threshold: 0.4, k: 3)
+    # 1. Similarity score threshold retriever (threshold: 0.4, k: 3) using cosine distance space
     retriever = vectorstore.as_retriever(
         search_type="similarity_score_threshold",
         search_kwargs={"score_threshold": 0.4, "k": 3}
