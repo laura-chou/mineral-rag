@@ -187,9 +187,14 @@ When generating Chinese responses, you MUST strictly use the following exact min
 - Chemical Composition -> 化學成分
 
 FORMATTING RULES:
-1. When retrieving mineral properties or details, output using a clear Bullet Points (條列式) format.
-2. Do NOT include any introductory prose, conversational filler, or concluding sentences before or after the bullet points.
-3. ESCAPE HATCH: If the specific property requested by the user (e.g., chemical composition, density) is completely missing from the Context, you MUST output a bullet point explicitly stating that the data is unavailable (e.g., "- 化學成分: 資料庫無此數據"). Do NOT output a completely blank response.
+1. When the requested properties exist in the Context, output them using a clear Bullet Points (條列式) format.
+2. Do NOT include any introductory prose, conversational filler, or concluding sentences when data IS successfully found.
+3. ELEGANT MISSING DATA HANDLING (缺失資料優化):
+   - Do NOT output repetitive bullet lines saying "資料庫無此數據" for each missing attribute.
+   - If the requested properties/attributes are missing from the Context, combine them into ONE natural, polite, and unified sentence.
+   - Include the mineral's formal English name and its common Traditional Chinese name in parentheses if applicable (e.g., 'Boulder opal（礫石蛋白石）', 'Lapis Lazuli（青金石）').
+   - Standard Response Template:
+     "抱歉，資料庫中目前沒有收錄 [礦物英文名]（[中文俗名]）的任何相關紀錄，因此無法為您提供其 [缺失屬性A] 與 [缺失屬性B] 的數據。"
 
 Context:
 {context}

@@ -32,13 +32,13 @@ Upon user query execution, a Two-Stage LLM Pipeline executes:
 1. **Stage 1 (LLM Term Extraction & Translation):** A lightweight `translator_chain` powered by Phi-3 translates user query terms (e.g. Traditional Chinese "青金石" or commercial name "Ruby") into formal English mineralogical names ("Lazurite", "Corundum").
 2. **Stage 2 (Python Gatekeeper):** An optimized regex matcher (`extract_target_mineral`) verifies the extracted English name against valid CSV records using word boundary matching (`\bname\b`) and length $\ge 4$ protection to prevent short-word false positives.
 3. **Stage 3 (Metadata Filtered Vector Retrieval):** Performs exact Chroma vector search (`filter={"Name": target_mineral}`).
-4. **Stage 4 (Strict Generation with Escape Hatch):** If matched, streams bullet-point responses formatted in exact Traditional Chinese mineralogy terminology. If a requested property is missing from context, an explicit Escape Hatch rule instructs Phi-3 to output an unavailable data note (e.g., `- 化學成分: 資料庫無此數據`) rather than blank responses. If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**`.
+4. **Stage 4 (Strict Generation with Elegant Missing Data Handling):** If matched, streams bullet-point responses formatted in exact Traditional Chinese mineralogy terminology. If specific attributes are missing from context, an Elegant Missing Data rule instructs Phi-3 to unify missing properties into a single polite sentence (e.g., `抱歉，資料庫中目前沒有收錄 [礦物英文名]（[中文俗名]）的任何相關紀錄，因此無法為您提供其 [缺失屬性A] 與 [缺失屬性B] 的數據。`) rather than repetitive bullet lines or blank outputs. If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**`.
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
 - **Two-Stage LLM Pipeline:** Uses LLM term extraction (`translator_chain`) replacing static dictionary aliases.
 - **Word Boundary & Short-Word Protection:** Regex `extract_target_mineral` matching prevents short name false positives (e.g., "In", "Tin").
-- **Prompt Escape Hatch Rule:** Instructs Phi-3 to explicitly state when requested attributes are missing in context to prevent blank outputs.
+- **Elegant Missing Data Handling:** Instructs Phi-3 to combine missing attributes into a single polite, natural response instead of repeating "資料庫無此數據".
 - **Sanitized Metadata Ingestion:** Filters out zero or `0.0` values from document metadata attributes.
 - **Metadata-Filtered Vector Retrieval:** Uses `vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})` to restrict vector lookup strictly to the identified mineral record.
 - **Zero-LLM Hallucination Rejection:** Hardcoded Python string rejection when no valid mineral name is identified in the prompt.
@@ -99,7 +99,7 @@ graph TD
         R -- Yes --> T[Stage 3: Chroma Metadata Filter Search: Name == target_mineral]
         T --> U{Documents Found?}
         U -- No --> S
-        U -- Yes --> V[Stage 4: Strict RAG Prompt + Terminology Mapping + Escape Hatch]
+        U -- Yes --> V[Stage 4: Strict RAG Prompt + Terminology Mapping + Elegant Missing Data Rule]
         V --> W[Ollama Phi-3 LLM Stream]
         S --> X[Real-Time Output Stream]
         W --> X
@@ -171,7 +171,7 @@ streamlit run app_ui.py
 Features of the Web UI:
 - **Two-Stage LLM Pipeline:** Uses LLM term extractor chain followed by a strict regex Python gatekeeper.
 - **Metadata Filtered Search:** Performs exact metadata lookup (`filter={"Name": target_mineral}`).
-- **Escape Hatch Prompt Protection:** Explicitly outputs missing property notes to avoid blank responses.
+- **Elegant Missing Data Handling:** Combines missing attributes into a unified, natural polite sentence.
 - **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
 
 ---
@@ -226,22 +226,15 @@ from langchain_core.output_parsers import StrOutputParser
 
 REJECTION_MESSAGE = "⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**"
 
-# Metadata construction filtering zero / 0.0
-metadata = {}
-for col in METADATA_COLS:
-    val = row.get(col)
-    if pd.notna(val) and str(val).strip() != "":
-        try:
-            if float(val) == 0: continue
-        except (ValueError, TypeError): pass
-        metadata[col] = format_value_with_units(col, val)
-
-# Strict prompt with Rule 3 ESCAPE HATCH
 strict_rag_template = """...
 FORMATTING RULES:
-1. When retrieving mineral properties or details, output using a clear Bullet Points (條列式) format.
-2. Do NOT include any introductory prose, conversational filler, or concluding sentences before or after the bullet points.
-3. ESCAPE HATCH: If the specific property requested by the user is completely missing from the Context, you MUST output a bullet point explicitly stating that the data is unavailable (e.g., "- 化學成分: 資料庫無此數據"). Do NOT output a completely blank response.
+1. When the requested properties exist in the Context, output them using a clear Bullet Points (條列式) format.
+2. Do NOT include any introductory prose, conversational filler, or concluding sentences when data IS successfully found.
+3. ELEGANT MISSING DATA HANDLING (缺失資料優化):
+   - Do NOT output repetitive bullet lines saying "資料庫無此數據" for each missing attribute.
+   - If the requested properties/attributes are missing from the Context, combine them into ONE natural, polite, and unified sentence.
+   - Standard Response Template:
+     "抱歉，資料庫中目前沒有收錄 [礦物英文名]（[中文俗名]）的任何相關紀錄，因此無法為您提供其 [缺失屬性A] 與 [缺失屬性B] 的數據。"
 """
 ```
 
@@ -259,6 +252,6 @@ FORMATTING RULES:
    - **Cause:** The Ollama background service is not active.
    - **Solution:** Execute `ollama serve` in a separate terminal before running the application script.
 
-2. **Blank LLM Output Responses**
-   - **Cause:** LLM fears generating conversational filler when requested property is missing from context.
-   - **Solution:** Rule 3 ESCAPE HATCH forces Phi-3 to yield an explicit unavailable property note rather than a blank output.
+2. **Repetitive "資料庫無此數據" Bullet Lines**
+   - **Cause:** LLM generates individual bullet point notes for every missing context property.
+   - **Solution:** Rule 3 ELEGANT MISSING DATA HANDLING instructs Phi-3 to combine missing properties into a single polite sentence.
