@@ -49,12 +49,31 @@ def preprocess_query(query: str) -> str:
             processed_query = pattern.sub(f"{alias} ({formal_name})", processed_query)
     return processed_query
 
+def extract_target_mineral(query: str, valid_names: list) -> str | None:
+    """Extracts target mineral name from query using exact name matching against valid mineral names list."""
+    query_lower = preprocess_query(query).lower()
+    sorted_names = sorted([str(n) for n in valid_names if pd.notna(n)], key=len, reverse=True)
+    for name in sorted_names:
+        if re.search(rf'\b{re.escape(name)}\b', query_lower, re.IGNORECASE) or name.lower() in query_lower:
+            return name
+    return None
+
 def get_or_create_vectorstore(embeddings):
     """
-    Checks if Chroma DB exists locally and tests embedding dimension compatibility.
-    If incompatible or missing, rebuilds the vector store using local minerals.csv or kagglehub.
-    Uses collection_metadata={"hnsw:space": "cosine"} to enforce cosine similarity relevance scoring.
+    Loads or creates Chroma DB vector store and returns (vectorstore, mineral_names).
     """
+    if os.path.exists(LOCAL_CSV_PATH):
+        df = pd.read_csv(LOCAL_CSV_PATH)
+    else:
+        path = kagglehub.dataset_download("paultimothymooney/minerals-dataset")
+        csv_files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith('.csv')]
+        if not csv_files:
+            raise FileNotFoundError("No CSV file found in downloaded dataset path.")
+        csv_file = csv_files[0]
+        df = pd.read_csv(csv_file)
+
+    mineral_names = df['Name'].dropna().unique().tolist()
+
     if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
         print("✓ Checking existing vector store in ./chroma_db ...")
         try:
@@ -64,26 +83,13 @@ def get_or_create_vectorstore(embeddings):
                 collection_metadata={"hnsw:space": "cosine"}
             )
             _ = vectorstore.similarity_search("test", k=1)
-            print("✓ Vector store loaded successfully with cosine distance metric.")
-            return vectorstore
+            print("✓ Vector store loaded successfully.")
+            return vectorstore, mineral_names
         except Exception as e:
             print(f"⚠️ Vector store dimension mismatch or corruption detected ({e}). Removing old database...")
             shutil.rmtree(CHROMA_DB_DIR, ignore_errors=True)
 
     print("✓ Initializing ingestion pipeline for multilingual vector store...")
-
-    if os.path.exists(LOCAL_CSV_PATH):
-        print("✓ Local minerals.csv detected. Loading directly...")
-        df = pd.read_csv(LOCAL_CSV_PATH)
-    else:
-        print("Local minerals.csv not found. Attempting to download via kagglehub...")
-        path = kagglehub.dataset_download("paultimothymooney/minerals-dataset")
-        csv_files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith('.csv')]
-        if not csv_files:
-            raise FileNotFoundError("No CSV file found in downloaded dataset path.")
-        csv_file = csv_files[0]
-        df = pd.read_csv(csv_file)
-
     print(f"Loaded full dataset with total {len(df)} rows.")
 
     print("Constructing documents with categorized text, units, metadata, and chemical composition (cols J:EE)...")
@@ -135,15 +141,15 @@ def get_or_create_vectorstore(embeddings):
 
     print(f"Created {len(documents)} structured Document objects.")
 
-    print("Generating multilingual HuggingFace embeddings and persisting into Chroma vector store with Cosine space...")
+    print("Generating multilingual HuggingFace embeddings and persisting into Chroma vector store...")
     vectorstore = Chroma.from_documents(
         documents=documents,
         embedding=embeddings,
         persist_directory=CHROMA_DB_DIR,
         collection_metadata={"hnsw:space": "cosine"}
     )
-    print("✓ Multilingual Chroma DB successfully created and persisted with cosine similarity metric.")
-    return vectorstore
+    print("✓ Multilingual Chroma DB successfully created and persisted.")
+    return vectorstore, mineral_names
 
 def format_docs(docs):
     formatted = []
@@ -154,17 +160,11 @@ def format_docs(docs):
 
 def main():
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-    vectorstore = get_or_create_vectorstore(embeddings)
-
-    # 1. Similarity score threshold retriever (threshold: 0.75, k: 3) using cosine distance space
-    retriever = vectorstore.as_retriever(
-        search_type="similarity_score_threshold",
-        search_kwargs={"score_threshold": 0.75, "k": 3}
-    )
+    vectorstore, mineral_names = get_or_create_vectorstore(embeddings)
 
     llm = ChatOllama(model="phi3", temperature=0)
 
-    # 2. Strict RAG Prompt Template (when retrieved context exists)
+    # Strict RAG Prompt Template
     strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
 
 CRITICAL TERMINOLOGY TRANSLATION MAPPINGS:
@@ -207,18 +207,26 @@ Question: {question}
             processed_query = preprocess_query(user_input)
             print(f"\nSearching for: {processed_query}...")
 
-            # Retrieve documents using similarity score threshold (0.75)
-            retrieved_docs = retriever.invoke(processed_query)
-
-            print("\nResponse:")
-            if retrieved_docs:
-                print("(Database context retrieved)")
-                formatted_context = format_docs(retrieved_docs)
-                response = strict_chain.invoke({"context": formatted_context, "question": processed_query})
-                print(response)
-            else:
-                print("(No database context above score threshold 0.75. Refusing to answer without calling LLM)")
+            # 1. Check if query contains valid mineral in CSV
+            target_mineral = extract_target_mineral(user_input, mineral_names)
+            if not target_mineral:
+                print("\nResponse:")
                 print(REJECTION_MESSAGE)
+                continue
+
+            # 2. Filter Chroma vector search strictly by Name metadata
+            docs = vectorstore.similarity_search(processed_query, k=3, filter={"Name": target_mineral})
+            if not docs:
+                print("\nResponse:")
+                print(REJECTION_MESSAGE)
+                continue
+
+            # 3. Pass docs to strict_chain for LLM output
+            print("\nResponse:")
+            print("(Database context retrieved)")
+            formatted_context = format_docs(docs)
+            response = strict_chain.invoke({"context": formatted_context, "question": processed_query})
+            print(response)
 
         except KeyboardInterrupt:
             print("\n\nProgram interrupted by user. Goodbye!")

@@ -50,21 +50,18 @@ def preprocess_query(query: str) -> str:
             processed_query = pattern.sub(f"{alias} ({formal_name})", processed_query)
     return processed_query
 
+def extract_target_mineral(query: str, valid_names: list) -> str | None:
+    """Extracts target mineral name from query using exact name matching against valid mineral names list."""
+    query_lower = preprocess_query(query).lower()
+    sorted_names = sorted([str(n) for n in valid_names if pd.notna(n)], key=len, reverse=True)
+    for name in sorted_names:
+        if re.search(rf'\b{re.escape(name)}\b', query_lower, re.IGNORECASE) or name.lower() in query_lower:
+            return name
+    return None
+
 @st.cache_resource(show_spinner="Initializing vector store...")
 def get_vectorstore():
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-    if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
-        try:
-            vectorstore = Chroma(
-                persist_directory=CHROMA_DB_DIR,
-                embedding_function=embeddings,
-                collection_metadata={"hnsw:space": "cosine"}
-            )
-            _ = vectorstore.similarity_search("test", k=1)
-            return vectorstore
-        except Exception:
-            shutil.rmtree(CHROMA_DB_DIR, ignore_errors=True)
-
     if os.path.exists(LOCAL_CSV_PATH):
         df = pd.read_csv(LOCAL_CSV_PATH)
     else:
@@ -74,6 +71,20 @@ def get_vectorstore():
             raise FileNotFoundError("No CSV file found in downloaded dataset path.")
         csv_file = csv_files[0]
         df = pd.read_csv(csv_file)
+
+    mineral_names = df['Name'].dropna().unique().tolist()
+
+    if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
+        try:
+            vectorstore = Chroma(
+                persist_directory=CHROMA_DB_DIR,
+                embedding_function=embeddings,
+                collection_metadata={"hnsw:space": "cosine"}
+            )
+            _ = vectorstore.similarity_search("test", k=1)
+            return vectorstore, mineral_names
+        except Exception:
+            shutil.rmtree(CHROMA_DB_DIR, ignore_errors=True)
 
     documents = []
     dynamic_chem_cols = df.iloc[:, 9:135].columns.tolist()
@@ -120,12 +131,13 @@ def get_vectorstore():
 
         documents.append(Document(page_content=page_content, metadata=metadata))
 
-    return Chroma.from_documents(
+    vectorstore = Chroma.from_documents(
         documents=documents,
         embedding=embeddings,
         persist_directory=CHROMA_DB_DIR,
         collection_metadata={"hnsw:space": "cosine"}
     )
+    return vectorstore, mineral_names
 
 def format_docs(docs):
     formatted = []
@@ -136,17 +148,9 @@ def format_docs(docs):
 
 @st.cache_resource(show_spinner="Initializing RAG components...")
 def get_rag_components():
-    vectorstore = get_vectorstore()
-
-    # 1. Similarity score threshold retriever (threshold: 0.75, k: 3) using cosine distance space
-    retriever = vectorstore.as_retriever(
-        search_type="similarity_score_threshold",
-        search_kwargs={"score_threshold": 0.75, "k": 3}
-    )
-
+    vectorstore, mineral_names = get_vectorstore()
     llm = ChatOllama(model="phi3", temperature=0)
 
-    # 2. Strict RAG Prompt Template (when retrieved context exists)
     strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
 
 CRITICAL TERMINOLOGY TRANSLATION MAPPINGS:
@@ -172,20 +176,29 @@ Question: {question}
     strict_prompt = ChatPromptTemplate.from_template(strict_rag_template)
     strict_chain = strict_prompt | llm | StrOutputParser()
 
-    return retriever, strict_chain
+    return vectorstore, strict_chain, mineral_names
 
 def get_response_stream(query: str):
-    retriever, strict_chain = get_rag_components()
+    vectorstore, strict_chain, mineral_names = get_rag_components()
     processed_query = preprocess_query(query)
-    docs = retriever.invoke(processed_query)
 
-    if docs:
-        formatted_context = format_docs(docs)
-        return strict_chain.stream({"context": formatted_context, "question": processed_query})
-    else:
+    # 1. Check if query contains valid mineral in CSV
+    target_mineral = extract_target_mineral(query, mineral_names)
+    if not target_mineral:
         def empty_response():
             yield REJECTION_MESSAGE
         return empty_response()
+
+    # 2. Filter Chroma vector search strictly by Name metadata
+    docs = vectorstore.similarity_search(processed_query, k=3, filter={"Name": target_mineral})
+    if not docs:
+        def empty_response():
+            yield REJECTION_MESSAGE
+        return empty_response()
+
+    # 3. Feed docs to strict_chain for LLM output
+    formatted_context = format_docs(docs)
+    return strict_chain.stream({"context": formatted_context, "question": processed_query})
 
 def main():
     st.set_page_config(page_title="Mineral Database RAG", page_icon="💎", layout="wide")

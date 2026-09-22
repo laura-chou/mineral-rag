@@ -6,7 +6,7 @@
 [![ChromaDB](https://img.shields.io/badge/VectorStore-ChromaDB-046A38?style=flat)](https://www.trychroma.com/)
 [![Streamlit](https://img.shields.io/badge/Frontend-Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io/)
 
-An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) system engineered for querying mineralogical data via both an interactive CLI and a modern Streamlit Web UI. Powered by LangChain, Ollama (`phi3`), HuggingFace Multilingual Embeddings (`paraphrase-multilingual-MiniLM-L12-v2`), and ChromaDB with Cosine Distance metrics, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
+An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) system engineered for querying mineralogical data via both an interactive CLI and a modern Streamlit Web UI. Powered by LangChain, Ollama (`phi3`), HuggingFace Multilingual Embeddings (`paraphrase-multilingual-MiniLM-L12-v2`), and ChromaDB with Metadata Filtering, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
 
 ---
 
@@ -26,17 +26,17 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 
 ## Project Overview
 
-The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`) configured with `collection_metadata={"hnsw:space": "cosine"}`.
+The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`).
 
-Upon user query execution, similarity search is performed with a strict cosine similarity score threshold (`score_threshold: 0.75`, `k: 3`):
-- **When Database Context is Found (`docs > 0`):** Injects context and uses a Strict RAG Prompt to output structured bullet points with exact Traditional Chinese mineralogy terminology.
-- **When Database Context is Missing / Below Threshold (`docs == 0`):** Bypasses LLM invocation completely and directly returns a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**` to eliminate hallucinations.
+Upon user query execution, a deterministic Python string-matching function (`extract_target_mineral`) scans the user query against valid CSV mineral names:
+- **When Mineral Name is Found:** Performs Chroma metadata-filtered vector search (`filter={"Name": target_mineral}`), injects context into a Strict RAG Prompt, and streams bullet-point responses with exact Traditional Chinese mineralogy terminology.
+- **When Mineral Name is Missing / Unmatched:** Bypasses LLM invocation completely and directly returns a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**` to eliminate hallucinations.
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
-- **Zero-LLM Hallucination Rejection:** Hardcoded Python string rejection when document relevance falls below 0.75 threshold.
-- **Cosine Distance Vector Metrics:** Configured with `collection_metadata={"hnsw:space": "cosine"}` to guarantee bounded similarity relevance scores between 0 and 1.
-- **Strict Similarity Score Thresholding:** Configured with `search_type="similarity_score_threshold"` (`score_threshold=0.75`) to prevent low-relevance retrieval noise.
+- **Python String Name Matcher:** Uses regex-based `extract_target_mineral` matching against valid CSV mineral names.
+- **Metadata-Filtered Vector Retrieval:** Uses `vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})` to restrict vector lookup strictly to the identified mineral record.
+- **Zero-LLM Hallucination Rejection:** Hardcoded Python string rejection when no valid mineral name is identified in the prompt.
 - **Multilingual Dense Embeddings:** Leverages `paraphrase-multilingual-MiniLM-L12-v2` for cross-lingual semantic vector retrieval.
 - **Targeted Chemical Composition Ingestion:** Slices CSV columns J to EE (indices 9 to 135) to capture element composition (> 0).
 - **Dual Interface:** Interactive Command-Line Interface (`app.py`) and a real-time streaming Streamlit Web UI (`app_ui.py`).
@@ -46,7 +46,7 @@ Key Features:
 
 ## Key Architectural Workflow
 
-The system processes data linearly through an ingestion pipeline, caches embeddings in a persistent vector database, and executes a deterministic interactive retrieval loop with similarity score threshold routing.
+The system processes data linearly through an ingestion pipeline, caches embeddings in a persistent vector database, and executes a deterministic interactive retrieval loop with Python string name interceptors and Chroma metadata filtering.
 
 ```mermaid
 graph TD
@@ -64,7 +64,7 @@ graph TD
         C -- Yes --> D[Load minerals.csv via Pandas]
         C -- No --> E[Download Dataset via kagglehub]
         E --> D
-        D --> F[Process Full Dataset - 3,112 Rows]
+        D --> F[Process Full Dataset & Extract Mineral Names List]
     end
     class B,C,D,E,F Ingestion;
 
@@ -83,23 +83,24 @@ graph TD
     subgraph S3 [3. Local Embedding & Storage]
         J --> K[Generate Multilingual Vectors <br><i>paraphrase-multilingual-MiniLM-L12-v2</i>]
         K --> L[(Store & Persist in Chroma Vector DB <br><i>Cosine Space: hnsw:space=cosine</i>)]
-        L --> M[Expose as Retriever <br><i>Score Threshold: 0.75, k=3</i>]
     end
-    class K,L,M Storage;
+    class K,L Storage;
 
-    %% Stage 4: Strict Score Threshold Inference & Hard Rejection
-    subgraph S4 [4. RAG Retrieval & Strict Rejection Inference]
+    %% Stage 4: Name Interception & Metadata-Filtered Inference
+    subgraph S4 [4. Name Interception & Metadata-Filtered Inference]
         N[CLI Input / Streamlit Chat Input] --> O[Gemology Alias Pre-processing]
-        O --> P[Similarity Score Threshold Search]
-        M -.->|Retrieve Docs| P
-        P --> Q{Retrieved Docs >= 0.75 Score?}
-        Q -- Yes --> R[Strict RAG Prompt + Terminology Mapping]
+        O --> P[extract_target_mineral Name Interceptor]
+        P --> Q{Matched Valid Mineral Name?}
         Q -- No --> S[Direct Python Rejection Yield <br><i>No LLM Invocation</i>]
-        R --> T[Ollama Phi-3 LLM Stream]
-        S --> U[Real-Time Output Stream]
-        T --> U
+        Q -- Yes --> T[Chroma Metadata Filter Search: Name == target_mineral]
+        T --> U{Documents Found?}
+        U -- No --> S
+        U -- Yes --> V[Strict RAG Prompt + Terminology Mapping]
+        V --> W[Ollama Phi-3 LLM Stream]
+        S --> X[Real-Time Output Stream]
+        W --> X
     end
-    class N,O,P,Q,R,S,T,U Inference;
+    class N,O,P,Q,S,T,U,V,W,X Inference;
 ```
 
 ---
@@ -164,7 +165,8 @@ streamlit run app_ui.py
 ```
 
 Features of the Web UI:
-- **Strict Hard Rejection:** Returns a direct string notice when document context similarity is below 0.75 without calling LLM.
+- **Deterministic Name Interceptor:** Returns a direct string notice when no valid CSV mineral name is detected without invoking the LLM.
+- **Metadata Filtered Search:** Performs exact metadata lookup (`filter={"Name": target_mineral}`).
 - **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
 - **Cached Vector Operations:** `@st.cache_resource` prevents re-indexing data on user actions.
 
@@ -192,11 +194,10 @@ The system behavior can be tuned by modifying parameters globally inside the run
 | Parameter | Default Value | Target Component | Purpose |
 | :--- | :--- | :--- | :--- |
 | `CHROMA_DB_DIR` | `./chroma_db` | Vector Store | Target directory for persisting vector embeddings on disk. |
-| `collection_metadata` | `{"hnsw:space": "cosine"}` | Chroma VectorDB | Distance metric configuration ensuring valid 0-1 similarity relevance scoring. |
+| `collection_metadata` | `{"hnsw:space": "cosine"}` | Chroma VectorDB | Distance metric configuration ensuring valid similarity relevance scoring. |
 | `EMBEDDING_MODEL_NAME` | `paraphrase-multilingual-MiniLM-L12-v2` | HuggingFaceEmbeddings | Multilingual sentence transformer model for dense vector generation. |
 | `LOCAL_CSV_PATH` | `minerals.csv` | Data Ingestion | Path to local CSV file to prioritize over Kaggle download. |
-| `search_type` | `similarity_score_threshold` | Chroma VectorDB | Filtering strategy requiring minimum cosine similarity score. |
-| `score_threshold` | `0.75` | Chroma VectorDB | Minimum similarity score bound for valid document retrieval. |
+| `filter` | `{"Name": target_mineral}` | Chroma VectorDB | Metadata filtering restricting vector lookup strictly to identified mineral. |
 | `k` | `3` | Chroma VectorDB | Maximum document snippet count retrieved per query. |
 | `model` | `phi3` | ChatOllama | Target local LLM backend optimized for 4GB VRAM. |
 | `temperature`  | `0` | ChatOllama LLM | Set to zero to eliminate creative hallucinations and enforce deterministic output. |
@@ -220,29 +221,32 @@ from langchain_core.output_parsers import StrOutputParser
 
 REJECTION_MESSAGE = "⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**"
 
-@st.cache_resource(show_spinner="Initializing RAG components...")
-def get_rag_components():
-    vectorstore = get_vectorstore()
-    retriever = vectorstore.as_retriever(
-        search_type="similarity_score_threshold",
-        search_kwargs={"score_threshold": 0.75, "k": 3}
-    )
-    llm = ChatOllama(model="phi3", temperature=0)
-    strict_prompt = ChatPromptTemplate.from_template("...")
-    return retriever, strict_prompt | llm | StrOutputParser()
+def extract_target_mineral(query: str, valid_names: list) -> str | None:
+    query_lower = preprocess_query(query).lower()
+    sorted_names = sorted([str(n) for n in valid_names if pd.notna(n)], key=len, reverse=True)
+    for name in sorted_names:
+        if re.search(rf'\b{re.escape(name)}\b', query_lower, re.IGNORECASE) or name.lower() in query_lower:
+            return name
+    return None
 
 def get_response_stream(query: str):
-    retriever, strict_chain = get_rag_components()
+    vectorstore, strict_chain, mineral_names = get_rag_components()
     processed_query = preprocess_query(query)
-    docs = retriever.invoke(processed_query)
 
-    if docs:
-        formatted_context = format_docs(docs)
-        return strict_chain.stream({"context": formatted_context, "question": processed_query})
-    else:
+    target_mineral = extract_target_mineral(query, mineral_names)
+    if not target_mineral:
         def empty_response():
             yield REJECTION_MESSAGE
         return empty_response()
+
+    docs = vectorstore.similarity_search(processed_query, k=3, filter={"Name": target_mineral})
+    if not docs:
+        def empty_response():
+            yield REJECTION_MESSAGE
+        return empty_response()
+
+    formatted_context = format_docs(docs)
+    return strict_chain.stream({"context": formatted_context, "question": processed_query})
 ```
 
 ---
@@ -259,6 +263,6 @@ def get_response_stream(query: str):
    - **Cause:** The Ollama background service is not active.
    - **Solution:** Execute `ollama serve` in a separate terminal before running the application script.
 
-2. **No Context Retrieved (`docs == 0`)**
-   - **Cause:** Similarity score threshold (0.75) was not met by database entries.
+2. **No Mineral Match Detected (`target_mineral is None`)**
+   - **Cause:** The query does not contain a formal mineral name or known gemology alias present in `minerals.csv`.
    - **Solution:** System directly displays hardcoded rejection string without inviting LLM hallucinations.
