@@ -14,6 +14,7 @@ from langchain_core.output_parsers import StrOutputParser
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
 EMBEDDING_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+REJECTION_MESSAGE = "⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**"
 
 CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
 METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
@@ -155,10 +156,10 @@ def main():
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     vectorstore = get_or_create_vectorstore(embeddings)
 
-    # 1. Similarity score threshold retriever (threshold: 0.4, k: 3) using cosine distance space
+    # 1. Similarity score threshold retriever (threshold: 0.75, k: 3) using cosine distance space
     retriever = vectorstore.as_retriever(
         search_type="similarity_score_threshold",
-        search_kwargs={"score_threshold": 0.4, "k": 3}
+        search_kwargs={"score_threshold": 0.75, "k": 3}
     )
 
     llm = ChatOllama(model="phi3", temperature=0)
@@ -189,16 +190,6 @@ Question: {question}
     strict_prompt = ChatPromptTemplate.from_template(strict_rag_template)
     strict_chain = strict_prompt | llm | StrOutputParser()
 
-    # 3. General Knowledge Prompt Template (when retrieved context is empty)
-    general_knowledge_template = """⚠️ 以下為通用科學常識，非資料庫精準數據：
-
-Answer the question based on your general knowledge.
-
-Question: {question}
-"""
-    general_prompt = ChatPromptTemplate.from_template(general_knowledge_template)
-    general_chain = general_prompt | llm | StrOutputParser()
-
     print("\n" + "="*50)
     print(" Mineral Database RAG Retrieval System (CLI)")
     print("="*50)
@@ -216,7 +207,7 @@ Question: {question}
             processed_query = preprocess_query(user_input)
             print(f"\nSearching for: {processed_query}...")
 
-            # Retrieve documents using similarity score threshold
+            # Retrieve documents using similarity score threshold (0.75)
             retrieved_docs = retriever.invoke(processed_query)
 
             print("\nResponse:")
@@ -226,9 +217,8 @@ Question: {question}
                 response = strict_chain.invoke({"context": formatted_context, "question": processed_query})
                 print(response)
             else:
-                print("(No database context above threshold. Falling back to general knowledge)")
-                response = general_chain.invoke({"question": processed_query})
-                print(response)
+                print("(No database context above score threshold 0.75. Refusing to answer without calling LLM)")
+                print(REJECTION_MESSAGE)
 
         except KeyboardInterrupt:
             print("\n\nProgram interrupted by user. Goodbye!")

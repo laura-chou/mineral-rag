@@ -15,6 +15,7 @@ from langchain_core.output_parsers import StrOutputParser
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
 EMBEDDING_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+REJECTION_MESSAGE = "⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**"
 
 CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
 METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
@@ -137,10 +138,10 @@ def format_docs(docs):
 def get_rag_components():
     vectorstore = get_vectorstore()
 
-    # 1. Similarity score threshold retriever (threshold: 0.4, k: 3) using cosine distance space
+    # 1. Similarity score threshold retriever (threshold: 0.75, k: 3) using cosine distance space
     retriever = vectorstore.as_retriever(
         search_type="similarity_score_threshold",
-        search_kwargs={"score_threshold": 0.4, "k": 3}
+        search_kwargs={"score_threshold": 0.75, "k": 3}
     )
 
     llm = ChatOllama(model="phi3", temperature=0)
@@ -171,20 +172,10 @@ Question: {question}
     strict_prompt = ChatPromptTemplate.from_template(strict_rag_template)
     strict_chain = strict_prompt | llm | StrOutputParser()
 
-    # 3. General Knowledge Prompt Template (when retrieved context is empty)
-    general_knowledge_template = """⚠️ 以下為通用科學常識，非資料庫精準數據：
-
-Answer the question based on your general knowledge.
-
-Question: {question}
-"""
-    general_prompt = ChatPromptTemplate.from_template(general_knowledge_template)
-    general_chain = general_prompt | llm | StrOutputParser()
-
-    return retriever, strict_chain, general_chain
+    return retriever, strict_chain
 
 def get_response_stream(query: str):
-    retriever, strict_chain, general_chain = get_rag_components()
+    retriever, strict_chain = get_rag_components()
     processed_query = preprocess_query(query)
     docs = retriever.invoke(processed_query)
 
@@ -192,7 +183,9 @@ def get_response_stream(query: str):
         formatted_context = format_docs(docs)
         return strict_chain.stream({"context": formatted_context, "question": processed_query})
     else:
-        return general_chain.stream({"question": processed_query})
+        def empty_response():
+            yield REJECTION_MESSAGE
+        return empty_response()
 
 def main():
     st.set_page_config(page_title="Mineral Database RAG", page_icon="💎", layout="wide")

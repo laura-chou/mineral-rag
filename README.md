@@ -28,15 +28,15 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 
 The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`) configured with `collection_metadata={"hnsw:space": "cosine"}`.
 
-Upon user query execution, similarity search is performed with a strict cosine similarity score threshold (`score_threshold: 0.4`, `k: 3`):
+Upon user query execution, similarity search is performed with a strict cosine similarity score threshold (`score_threshold: 0.75`, `k: 3`):
 - **When Database Context is Found (`docs > 0`):** Injects context and uses a Strict RAG Prompt to output structured bullet points with exact Traditional Chinese mineralogy terminology.
-- **When Database Context is Missing / Below Threshold (`docs == 0`):** Switches to a General Knowledge Fallback Prompt prefixed with `⚠️ 以下為通用科學常識，非資料庫精準數據：` to answer using internal LLM knowledge.
+- **When Database Context is Missing / Below Threshold (`docs == 0`):** Bypasses LLM invocation completely and directly returns a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**` to eliminate hallucinations.
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
+- **Zero-LLM Hallucination Rejection:** Hardcoded Python string rejection when document relevance falls below 0.75 threshold.
 - **Cosine Distance Vector Metrics:** Configured with `collection_metadata={"hnsw:space": "cosine"}` to guarantee bounded similarity relevance scores between 0 and 1.
-- **Similarity Score Thresholding:** Configured with `search_type="similarity_score_threshold"` (`score_threshold=0.4`) to prevent low-relevance retrieval noise.
-- **Conditional Dual-Prompt Architecture:** Routes queries to Strict RAG Chain when context is matched, or General Knowledge Fallback Chain prefixed with warning headers when context is absent.
+- **Strict Similarity Score Thresholding:** Configured with `search_type="similarity_score_threshold"` (`score_threshold=0.75`) to prevent low-relevance retrieval noise.
 - **Multilingual Dense Embeddings:** Leverages `paraphrase-multilingual-MiniLM-L12-v2` for cross-lingual semantic vector retrieval.
 - **Targeted Chemical Composition Ingestion:** Slices CSV columns J to EE (indices 9 to 135) to capture element composition (> 0).
 - **Dual Interface:** Interactive Command-Line Interface (`app.py`) and a real-time streaming Streamlit Web UI (`app_ui.py`).
@@ -83,21 +83,21 @@ graph TD
     subgraph S3 [3. Local Embedding & Storage]
         J --> K[Generate Multilingual Vectors <br><i>paraphrase-multilingual-MiniLM-L12-v2</i>]
         K --> L[(Store & Persist in Chroma Vector DB <br><i>Cosine Space: hnsw:space=cosine</i>)]
-        L --> M[Expose as Retriever <br><i>Score Threshold: 0.4, k=3</i>]
+        L --> M[Expose as Retriever <br><i>Score Threshold: 0.75, k=3</i>]
     end
     class K,L,M Storage;
 
-    %% Stage 4: Conditional Dual-Prompt Inference
-    subgraph S4 [4. RAG Retrieval & Dual-Prompt Inference]
+    %% Stage 4: Strict Score Threshold Inference & Hard Rejection
+    subgraph S4 [4. RAG Retrieval & Strict Rejection Inference]
         N[CLI Input / Streamlit Chat Input] --> O[Gemology Alias Pre-processing]
         O --> P[Similarity Score Threshold Search]
         M -.->|Retrieve Docs| P
-        P --> Q{Retrieved Docs > 0?}
+        P --> Q{Retrieved Docs >= 0.75 Score?}
         Q -- Yes --> R[Strict RAG Prompt + Terminology Mapping]
-        Q -- No --> S[General Knowledge Prompt + Warning Header]
+        Q -- No --> S[Direct Python Rejection Yield <br><i>No LLM Invocation</i>]
         R --> T[Ollama Phi-3 LLM Stream]
-        S --> T
-        T --> U[Real-Time Output Stream]
+        S --> U[Real-Time Output Stream]
+        T --> U
     end
     class N,O,P,Q,R,S,T,U Inference;
 ```
@@ -164,7 +164,7 @@ streamlit run app_ui.py
 ```
 
 Features of the Web UI:
-- **Conditional Dual-Prompt Output:** Streams database grounded answers in bullet points or falls back to general knowledge with a warning header.
+- **Strict Hard Rejection:** Returns a direct string notice when document context similarity is below 0.75 without calling LLM.
 - **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
 - **Cached Vector Operations:** `@st.cache_resource` prevents re-indexing data on user actions.
 
@@ -196,7 +196,7 @@ The system behavior can be tuned by modifying parameters globally inside the run
 | `EMBEDDING_MODEL_NAME` | `paraphrase-multilingual-MiniLM-L12-v2` | HuggingFaceEmbeddings | Multilingual sentence transformer model for dense vector generation. |
 | `LOCAL_CSV_PATH` | `minerals.csv` | Data Ingestion | Path to local CSV file to prioritize over Kaggle download. |
 | `search_type` | `similarity_score_threshold` | Chroma VectorDB | Filtering strategy requiring minimum cosine similarity score. |
-| `score_threshold` | `0.4` | Chroma VectorDB | Minimum similarity score bound for valid document retrieval. |
+| `score_threshold` | `0.75` | Chroma VectorDB | Minimum similarity score bound for valid document retrieval. |
 | `k` | `3` | Chroma VectorDB | Maximum document snippet count retrieved per query. |
 | `model` | `phi3` | ChatOllama | Target local LLM backend optimized for 4GB VRAM. |
 | `temperature`  | `0` | ChatOllama LLM | Set to zero to eliminate creative hallucinations and enforce deterministic output. |
@@ -218,24 +218,31 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-@st.cache_resource(show_spinner="Initializing vector store...")
-def get_vectorstore():
-    embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
-    if os.path.exists("./chroma_db") and os.listdir("./chroma_db"):
-        return Chroma(
-            persist_directory="./chroma_db",
-            embedding_function=embeddings,
-            collection_metadata={"hnsw:space": "cosine"}
-        )
+REJECTION_MESSAGE = "⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**"
 
-    # ... Data ingestion and Document construction ...
-
-    return Chroma.from_documents(
-        documents=documents,
-        embedding=embeddings,
-        persist_directory="./chroma_db",
-        collection_metadata={"hnsw:space": "cosine"}
+@st.cache_resource(show_spinner="Initializing RAG components...")
+def get_rag_components():
+    vectorstore = get_vectorstore()
+    retriever = vectorstore.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={"score_threshold": 0.75, "k": 3}
     )
+    llm = ChatOllama(model="phi3", temperature=0)
+    strict_prompt = ChatPromptTemplate.from_template("...")
+    return retriever, strict_prompt | llm | StrOutputParser()
+
+def get_response_stream(query: str):
+    retriever, strict_chain = get_rag_components()
+    processed_query = preprocess_query(query)
+    docs = retriever.invoke(processed_query)
+
+    if docs:
+        formatted_context = format_docs(docs)
+        return strict_chain.stream({"context": formatted_context, "question": processed_query})
+    else:
+        def empty_response():
+            yield REJECTION_MESSAGE
+        return empty_response()
 ```
 
 ---
@@ -252,6 +259,6 @@ def get_vectorstore():
    - **Cause:** The Ollama background service is not active.
    - **Solution:** Execute `ollama serve` in a separate terminal before running the application script.
 
-2. **Relevance scores must be between 0 and 1 Error**
-   - **Cause:** Chroma defaults to L2 distance space, producing negative distance scores in similarity score thresholding.
-   - **Solution:** `collection_metadata={"hnsw:space": "cosine"}` enforces Cosine space across database creation and loading.
+2. **No Context Retrieved (`docs == 0`)**
+   - **Cause:** Similarity score threshold (0.75) was not met by database entries.
+   - **Solution:** System directly displays hardcoded rejection string without inviting LLM hallucinations.
