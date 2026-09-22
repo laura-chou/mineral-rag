@@ -74,7 +74,6 @@ def get_vectorstore():
         df = pd.read_csv(csv_file)
 
     documents = []
-    # Extract chemical composition columns strictly from column index 9 (J) to 135 (EE)
     dynamic_chem_cols = df.iloc[:, 9:135].columns.tolist()
 
     for _, row in df.iterrows():
@@ -125,13 +124,27 @@ def get_vectorstore():
         persist_directory=CHROMA_DB_DIR
     )
 
-@st.cache_resource(show_spinner="Initializing LLM chain...")
-def get_rag_chain():
+def format_docs(docs):
+    formatted = []
+    for doc in docs:
+        meta_info = ", ".join(f"{k}: {v}" for k, v in doc.metadata.items() if pd.notna(v))
+        formatted.append(f"{doc.page_content} | Metadata: {meta_info}")
+    return "\n\n".join(formatted)
+
+@st.cache_resource(show_spinner="Initializing RAG components...")
+def get_rag_components():
     vectorstore = get_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+    # 1. Similarity score threshold retriever (threshold: 0.4, k: 3)
+    retriever = vectorstore.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={"score_threshold": 0.4, "k": 3}
+    )
+
     llm = ChatOllama(model="phi3", temperature=0)
 
-    template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
+    # 2. Strict RAG Prompt Template (when retrieved context exists)
+    strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
 
 CRITICAL TERMINOLOGY TRANSLATION MAPPINGS:
 When generating Chinese responses, you MUST strictly use the following exact mineralogical translations:
@@ -147,36 +160,42 @@ When generating Chinese responses, you MUST strictly use the following exact min
 FORMATTING RULES:
 1. When retrieving mineral properties or details, output using a clear Bullet Points (條列式) format.
 2. Do NOT include any introductory prose, conversational filler, or concluding sentences before or after the bullet points.
-3. If the context does not contain enough information to answer the question, state EXACTLY:
-"我無法根據提供的上下文回答這個問題。"
 
 Context:
 {context}
 
 Question: {question}
 """
-    prompt = ChatPromptTemplate.from_template(template)
+    strict_prompt = ChatPromptTemplate.from_template(strict_rag_template)
+    strict_chain = strict_prompt | llm | StrOutputParser()
 
-    def format_docs(docs):
-        formatted = []
-        for doc in docs:
-            meta_info = ", ".join(f"{k}: {v}" for k, v in doc.metadata.items() if pd.notna(v))
-            formatted.append(f"{doc.page_content} | Metadata: {meta_info}")
-        return "\n\n".join(formatted)
+    # 3. General Knowledge Prompt Template (when retrieved context is empty)
+    general_knowledge_template = """⚠️ 以下為通用科學常識，非資料庫精準數據：
 
-    return (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+Answer the question based on your general knowledge.
+
+Question: {question}
+"""
+    general_prompt = ChatPromptTemplate.from_template(general_knowledge_template)
+    general_chain = general_prompt | llm | StrOutputParser()
+
+    return retriever, strict_chain, general_chain
+
+def get_response_stream(query: str):
+    retriever, strict_chain, general_chain = get_rag_components()
+    processed_query = preprocess_query(query)
+    docs = retriever.invoke(processed_query)
+
+    if docs:
+        formatted_context = format_docs(docs)
+        return strict_chain.stream({"context": formatted_context, "question": processed_query})
+    else:
+        return general_chain.stream({"question": processed_query})
 
 def main():
     st.set_page_config(page_title="Mineral Database RAG", page_icon="💎", layout="wide")
     st.title("💎 Mineral Database Local RAG System")
     st.markdown("Explore mineral properties, chemical compositions, and optical attributes using local Ollama (Phi-3), HuggingFace Embeddings, and Chroma DB.")
-
-    rag_chain = get_rag_chain()
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -190,12 +209,9 @@ def main():
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        processed_query = preprocess_query(user_input)
-
         with st.chat_message("assistant"):
             try:
-                # Stream responses in real-time to avoid freezing st.spinner
-                response = st.write_stream(rag_chain.stream(processed_query))
+                response = st.write_stream(get_response_stream(user_input))
                 st.session_state.messages.append({"role": "assistant", "content": response})
             except Exception as e:
                 error_msg = f"Error generating response: {e}"

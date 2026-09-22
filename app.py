@@ -61,7 +61,6 @@ def get_or_create_vectorstore(embeddings):
                 persist_directory=CHROMA_DB_DIR,
                 embedding_function=embeddings
             )
-            # Dimension test query to ensure compatibility with paraphrase-multilingual-MiniLM-L12-v2
             _ = vectorstore.similarity_search("test", k=1)
             print("✓ Vector store loaded successfully and dimension verified.")
             return vectorstore
@@ -88,11 +87,9 @@ def get_or_create_vectorstore(embeddings):
     print("Constructing documents with categorized text, units, metadata, and chemical composition (cols J:EE)...")
     documents = []
 
-    # Extract chemical composition columns strictly from column index 9 (J) to 135 (EE)
     dynamic_chem_cols = df.iloc[:, 9:135].columns.tolist()
 
     for _, row in df.iterrows():
-        # 1. Build Core Text Part (skipping NaN, empty strings, and zero values)
         core_parts = []
         for col in CORE_TEXT_COLS:
             val = row.get(col)
@@ -105,7 +102,6 @@ def get_or_create_vectorstore(embeddings):
                 formatted_val = format_value_with_units(col, val)
                 core_parts.append(f"{col}: {formatted_val}")
 
-        # 2. Build Dynamic Chemical Composition Part from J to EE columns (> 0)
         chem_parts = []
         for col in dynamic_chem_cols:
             val = row.get(col)
@@ -123,7 +119,6 @@ def get_or_create_vectorstore(embeddings):
 
         page_content = ". ".join(core_parts)
 
-        # 3. Build Metadata Dict with units
         metadata = {}
         for col in METADATA_COLS:
             val = row.get(col)
@@ -138,7 +133,6 @@ def get_or_create_vectorstore(embeddings):
 
     print(f"Created {len(documents)} structured Document objects.")
 
-    # Local Embedding & Storage
     print("Generating multilingual HuggingFace embeddings and persisting into Chroma vector store...")
     vectorstore = Chroma.from_documents(
         documents=documents,
@@ -148,16 +142,27 @@ def get_or_create_vectorstore(embeddings):
     print("✓ Multilingual Chroma DB successfully created and persisted.")
     return vectorstore
 
+def format_docs(docs):
+    formatted = []
+    for doc in docs:
+        meta_info = ", ".join(f"{k}: {v}" for k, v in doc.metadata.items() if pd.notna(v))
+        formatted.append(f"{doc.page_content} | Metadata: {meta_info}")
+    return "\n\n".join(formatted)
+
 def main():
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     vectorstore = get_or_create_vectorstore(embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-    # RAG Retrieval Loop & Inference Chain with Strict Guardrails and Bullet Points Formatting
-    print("Initializing ChatOllama Phi-3 LLM chain...")
+    # 1. Similarity score threshold retriever (threshold: 0.4, k: 3)
+    retriever = vectorstore.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={"score_threshold": 0.4, "k": 3}
+    )
+
     llm = ChatOllama(model="phi3", temperature=0)
 
-    template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
+    # 2. Strict RAG Prompt Template (when retrieved context exists)
+    strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
 
 CRITICAL TERMINOLOGY TRANSLATION MAPPINGS:
 When generating Chinese responses, you MUST strictly use the following exact mineralogical translations:
@@ -173,29 +178,24 @@ When generating Chinese responses, you MUST strictly use the following exact min
 FORMATTING RULES:
 1. When retrieving mineral properties or details, output using a clear Bullet Points (條列式) format.
 2. Do NOT include any introductory prose, conversational filler, or concluding sentences before or after the bullet points.
-3. If the context does not contain enough information to answer the question, state EXACTLY:
-"我無法根據提供的上下文回答這個問題。"
 
 Context:
 {context}
 
 Question: {question}
 """
-    prompt = ChatPromptTemplate.from_template(template)
+    strict_prompt = ChatPromptTemplate.from_template(strict_rag_template)
+    strict_chain = strict_prompt | llm | StrOutputParser()
 
-    def format_docs(docs):
-        formatted = []
-        for doc in docs:
-            meta_info = ", ".join(f"{k}: {v}" for k, v in doc.metadata.items() if pd.notna(v))
-            formatted.append(f"{doc.page_content} | Metadata: {meta_info}")
-        return "\n\n".join(formatted)
+    # 3. General Knowledge Prompt Template (when retrieved context is empty)
+    general_knowledge_template = """⚠️ 以下為通用科學常識，非資料庫精準數據：
 
-    rag_chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+Answer the question based on your general knowledge.
+
+Question: {question}
+"""
+    general_prompt = ChatPromptTemplate.from_template(general_knowledge_template)
+    general_chain = general_prompt | llm | StrOutputParser()
 
     print("\n" + "="*50)
     print(" Mineral Database RAG Retrieval System (CLI)")
@@ -213,9 +213,21 @@ Question: {question}
 
             processed_query = preprocess_query(user_input)
             print(f"\nSearching for: {processed_query}...")
-            response = rag_chain.invoke(processed_query)
+
+            # Retrieve documents using similarity score threshold
+            retrieved_docs = retriever.invoke(processed_query)
+
             print("\nResponse:")
-            print(response)
+            if retrieved_docs:
+                print("(Database context retrieved)")
+                formatted_context = format_docs(retrieved_docs)
+                response = strict_chain.invoke({"context": formatted_context, "question": processed_query})
+                print(response)
+            else:
+                print("(No database context above threshold. Falling back to general knowledge)")
+                response = general_chain.invoke({"question": processed_query})
+                print(response)
+
         except KeyboardInterrupt:
             print("\n\nProgram interrupted by user. Goodbye!")
             break

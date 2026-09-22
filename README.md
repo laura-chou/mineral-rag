@@ -26,23 +26,26 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 
 ## Project Overview
 
-The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`). Upon user query execution, relevant mineral context is retrieved via vector similarity search ($k=3$) and streamed in real-time to a local Phi-3 small language model served by Ollama to synthesize accurate, grounded answers in bullet points.
+The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`).
+
+Upon user query execution, similarity search is performed with a strict similarity score threshold (`score_threshold: 0.4`, `k: 3`):
+- **When Database Context is Found (`docs > 0`):** Injects context and uses a Strict RAG Prompt to output structured bullet points with exact Traditional Chinese mineralogy terminology.
+- **When Database Context is Missing / Below Threshold (`docs == 0`):** Switches to a General Knowledge Fallback Prompt prefixed with `⚠️ 以下為通用科學常識，非資料庫精準數據：` to answer using internal LLM knowledge.
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
+- **Similarity Score Thresholding:** Configured with `search_type="similarity_score_threshold"` (`score_threshold=0.4`) to prevent low-relevance retrieval noise.
+- **Conditional Dual-Prompt Architecture:** Routes queries to Strict RAG Chain when context is matched, or General Knowledge Fallback Chain prefixed with warning headers when context is absent.
 - **Multilingual Dense Embeddings:** Leverages `paraphrase-multilingual-MiniLM-L12-v2` for cross-lingual semantic vector retrieval.
-- **Automatic Dimension Compatibility:** Automatically detects dimension mismatches in existing `./chroma_db` stores and recreates them cleanly.
 - **Targeted Chemical Composition Ingestion:** Slices CSV columns J to EE (indices 9 to 135) to capture element composition (> 0).
 - **Dual Interface:** Interactive Command-Line Interface (`app.py`) and a real-time streaming Streamlit Web UI (`app_ui.py`).
 - **Real-Time Output Streaming:** `st.write_stream` ensures low-latency responsive chat rendering without UI freezing.
-- **Bullet-Point Output Format:** System prompt instructs Phi-3 to respond strictly in clean bullet points without conversational filler.
-- **Strict Guardrails:** Configured to strictly answer from retrieved context and fallback to `"我無法根據提供的上下文回答這個問題。"` when context is insufficient.
 
 ---
 
 ## Key Architectural Workflow
 
-The system processes data linearly through an ingestion pipeline, caches embeddings in a persistent vector database, and executes a deterministic interactive retrieval loop for grounded generation.
+The system processes data linearly through an ingestion pipeline, caches embeddings in a persistent vector database, and executes a deterministic interactive retrieval loop with similarity score threshold routing.
 
 ```mermaid
 graph TD
@@ -79,20 +82,23 @@ graph TD
     subgraph S3 [3. Local Embedding & Storage]
         J --> K[Generate Multilingual Vectors <br><i>paraphrase-multilingual-MiniLM-L12-v2</i>]
         K --> L[(Store & Persist in Chroma Vector DB)]
-        L --> M[Expose as Retriever <br><i>Search Kwargs: k=3</i>]
+        L --> M[Expose as Retriever <br><i>Score Threshold: 0.4, k=3</i>]
     end
     class K,L,M Storage;
 
-    %% Stage 4: RAG Retrieval & Inference
-    subgraph S4 [4. RAG Retrieval Loop]
+    %% Stage 4: Conditional Dual-Prompt Inference
+    subgraph S4 [4. RAG Retrieval & Dual-Prompt Inference]
         N[CLI Input / Streamlit Chat Input] --> O[Gemology Alias Pre-processing]
-        O --> P[Vector Similarity Search - Top K=3]
-        M -.->|Retrieve Context & Metadata| P
-        P --> Q[Inject Context, Metadata & Bullet-Point Guardrails]
-        Q --> R[Local Inference via Ollama <br><i>Phi-3 LLM</i>]
-        R --> S[Stream Real-Time Bullet Point Response]
+        O --> P[Similarity Score Threshold Search]
+        M -.->|Retrieve Docs| P
+        P --> Q{Retrieved Docs > 0?}
+        Q -- Yes --> R[Strict RAG Prompt + Terminology Mapping]
+        Q -- No --> S[General Knowledge Prompt + Warning Header]
+        R --> T[Ollama Phi-3 LLM Stream]
+        S --> T
+        T --> U[Real-Time Output Stream]
     end
-    class N,O,P,Q,R,S Inference;
+    class N,O,P,Q,R,S,T,U Inference;
 ```
 
 ---
@@ -126,9 +132,6 @@ python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-> [!NOTE]
-> If a local `minerals.csv` file is present in the repository root directory, `app.py` and `app_ui.py` will load it directly and bypass Kaggle downloading.
-
 ---
 
 ## Installation & Quickstart Guide
@@ -160,9 +163,9 @@ streamlit run app_ui.py
 ```
 
 Features of the Web UI:
+- **Conditional Dual-Prompt Output:** Streams database grounded answers in bullet points or falls back to general knowledge with a warning header.
 - **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
 - **Cached Vector Operations:** `@st.cache_resource` prevents re-indexing data on user actions.
-- **Automatic Database Migration:** Handles vector dimension changes seamlessly upon model switching.
 
 ---
 
@@ -190,10 +193,10 @@ The system behavior can be tuned by modifying parameters globally inside the run
 | `CHROMA_DB_DIR` | `./chroma_db` | Vector Store | Target directory for persisting vector embeddings on disk. |
 | `EMBEDDING_MODEL_NAME` | `paraphrase-multilingual-MiniLM-L12-v2` | HuggingFaceEmbeddings | Multilingual sentence transformer model for dense vector generation. |
 | `LOCAL_CSV_PATH` | `minerals.csv` | Data Ingestion | Path to local CSV file to prioritize over Kaggle download. |
-| `CORE_TEXT_COLS` | `['Name', 'Crystal Structure', ...]` | Document Construction | Core physical/optical properties embedded into `page_content`. |
-| `df.iloc[:, 9:135]` | Columns J to EE | Data Ingestion | Exact column indices for extracting chemical composition data (> 0). |
+| `search_type` | `similarity_score_threshold` | Chroma VectorDB | Filtering strategy requiring minimum cosine similarity score. |
+| `score_threshold` | `0.4` | Chroma VectorDB | Minimum similarity score bound for valid document retrieval. |
+| `k` | `3` | Chroma VectorDB | Maximum document snippet count retrieved per query. |
 | `model` | `phi3` | ChatOllama | Target local LLM backend optimized for 4GB VRAM. |
-| `search_kwargs`| `{"k": 3}` | Chroma VectorDB | Number of top relevant document snippets retrieved per query. |
 | `temperature`  | `0` | ChatOllama LLM | Set to zero to eliminate creative hallucinations and enforce deterministic output. |
 
 ---
@@ -205,50 +208,38 @@ Below is the Streamlit Web UI application logic in `app_ui.py`:
 ```python
 import os
 import re
-import shutil
 import pandas as pd
-import kagglehub
 import streamlit as st
-from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-CHROMA_DB_DIR = "./chroma_db"
-LOCAL_CSV_PATH = "minerals.csv"
-EMBEDDING_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
-
-@st.cache_resource(show_spinner="Initializing vector store...")
-def get_vectorstore():
-    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-    if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
-        try:
-            vectorstore = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
-            _ = vectorstore.similarity_search("test", k=1)
-            return vectorstore
-        except Exception:
-            shutil.rmtree(CHROMA_DB_DIR, ignore_errors=True)
-
-    df = pd.read_csv(LOCAL_CSV_PATH) if os.path.exists(LOCAL_CSV_PATH) else pd.read_csv("minerals.csv")
-    dynamic_chem_cols = df.iloc[:, 9:135].columns.tolist()
-    # Document building logic...
-
-@st.cache_resource(show_spinner="Initializing LLM chain...")
-def get_rag_chain():
+@st.cache_resource(show_spinner="Initializing RAG components...")
+def get_rag_components():
     vectorstore = get_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    retriever = vectorstore.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={"score_threshold": 0.4, "k": 3}
+    )
     llm = ChatOllama(model="phi3", temperature=0)
-    # RAG Chain setup with bullet point rules...
 
-def main():
-    st.set_page_config(page_title="Mineral Database RAG", page_icon="💎", layout="wide")
-    st.title("💎 Mineral Database Local RAG System")
+    strict_prompt = ChatPromptTemplate.from_template("...") # Strict RAG prompt
+    general_prompt = ChatPromptTemplate.from_template("⚠️ 以下為通用科學常識，非資料庫精準數據：\n\nQuestion: {question}") # Fallback prompt
 
-    rag_chain = get_rag_chain()
-    # Chat interaction with real-time st.write_stream streaming...
+    return retriever, strict_prompt | llm | StrOutputParser(), general_prompt | llm | StrOutputParser()
+
+def get_response_stream(query: str):
+    retriever, strict_chain, general_chain = get_rag_components()
+    processed_query = preprocess_query(query)
+    docs = retriever.invoke(processed_query)
+
+    if docs:
+        formatted_context = format_docs(docs)
+        return strict_chain.stream({"context": formatted_context, "question": processed_query})
+    else:
+        return general_chain.stream({"question": processed_query})
 ```
 
 ---
@@ -265,6 +256,6 @@ def main():
    - **Cause:** The Ollama background service is not active.
    - **Solution:** Execute `ollama serve` in a separate terminal before running the application script.
 
-2. **Vector Dimension Mismatch Error**
-   - **Cause:** Switching embedding models when `./chroma_db` contains old vector indexes.
-   - **Solution:** The application automatically detects dimension mismatches, clears `./chroma_db`, and rebuilds vector indexes seamlessly.
+2. **No Context Retrieved (`docs == 0`)**
+   - **Cause:** Similarity score threshold (0.4) was not met by database entries.
+   - **Solution:** System automatically uses the General Knowledge prompt with warning headers. Lower `score_threshold` if wider context matches are desired.
