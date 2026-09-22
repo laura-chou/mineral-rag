@@ -115,6 +115,12 @@ def get_vectorstore():
         for col in METADATA_COLS:
             val = row.get(col)
             if pd.notna(val) and str(val).strip() != "":
+                try:
+                    if float(val) == 0:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
                 formatted_val = format_value_with_units(col, val)
                 if isinstance(formatted_val, (int, float, str)):
                     metadata[col] = formatted_val
@@ -170,6 +176,7 @@ When generating Chinese responses, you MUST strictly use the following exact min
 FORMATTING RULES:
 1. When retrieving mineral properties or details, output using a clear Bullet Points (條列式) format.
 2. Do NOT include any introductory prose, conversational filler, or concluding sentences before or after the bullet points.
+3. ESCAPE HATCH: If the specific property requested by the user (e.g., chemical composition, density) is completely missing from the Context, you MUST output a bullet point explicitly stating that the data is unavailable (e.g., "- 化學成分: 資料庫無此數據"). Do NOT output a completely blank response.
 
 Context:
 {context}

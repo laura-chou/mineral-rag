@@ -26,22 +26,23 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 
 ## Project Overview
 
-The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`).
+The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, sanitized metadata dictionaries (excluding zero/null values), and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`).
 
 Upon user query execution, a Two-Stage LLM Pipeline executes:
 1. **Stage 1 (LLM Term Extraction & Translation):** A lightweight `translator_chain` powered by Phi-3 translates user query terms (e.g. Traditional Chinese "青金石" or commercial name "Ruby") into formal English mineralogical names ("Lazurite", "Corundum").
 2. **Stage 2 (Python Gatekeeper):** An optimized regex matcher (`extract_target_mineral`) verifies the extracted English name against valid CSV records using word boundary matching (`\bname\b`) and length $\ge 4$ protection to prevent short-word false positives.
 3. **Stage 3 (Metadata Filtered Vector Retrieval):** Performs exact Chroma vector search (`filter={"Name": target_mineral}`).
-4. **Stage 4 (Strict Generation):** If matched, streams bullet-point responses formatted in exact Traditional Chinese mineralogy terminology. If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**`.
+4. **Stage 4 (Strict Generation with Escape Hatch):** If matched, streams bullet-point responses formatted in exact Traditional Chinese mineralogy terminology. If a requested property is missing from context, an explicit Escape Hatch rule instructs Phi-3 to output an unavailable data note (e.g., `- 化學成分: 資料庫無此數據`) rather than blank responses. If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**`.
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
 - **Two-Stage LLM Pipeline:** Uses LLM term extraction (`translator_chain`) replacing static dictionary aliases.
 - **Word Boundary & Short-Word Protection:** Regex `extract_target_mineral` matching prevents short name false positives (e.g., "In", "Tin").
+- **Prompt Escape Hatch Rule:** Instructs Phi-3 to explicitly state when requested attributes are missing in context to prevent blank outputs.
+- **Sanitized Metadata Ingestion:** Filters out zero or `0.0` values from document metadata attributes.
 - **Metadata-Filtered Vector Retrieval:** Uses `vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})` to restrict vector lookup strictly to the identified mineral record.
 - **Zero-LLM Hallucination Rejection:** Hardcoded Python string rejection when no valid mineral name is identified in the prompt.
 - **Multilingual Dense Embeddings:** Leverages `paraphrase-multilingual-MiniLM-L12-v2` for cross-lingual semantic vector retrieval.
-- **Targeted Chemical Composition Ingestion:** Slices CSV columns J to EE (indices 9 to 135) to capture element composition (> 0).
 - **Dual Interface:** Interactive Command-Line Interface (`app.py`) and a real-time streaming Streamlit Web UI (`app_ui.py`).
 
 ---
@@ -72,9 +73,9 @@ graph TD
 
     %% Stage 2: Data Transformation
     subgraph S2 [2. Data Transformation]
-        F --> G[Extract CORE_TEXT_COLS + Units]
+        F --> G[Extract CORE_TEXT_COLS + Units - Filter 0.0]
         F --> H[Extract Chemical Cols J:EE - idx 9:135 > 0]
-        F --> I[Extract METADATA_COLS + Units]
+        F --> I[Extract METADATA_COLS + Units - Filter 0.0]
         G --> J[Construct Document Objects]
         H --> J
         I --> J
@@ -98,7 +99,7 @@ graph TD
         R -- Yes --> T[Stage 3: Chroma Metadata Filter Search: Name == target_mineral]
         T --> U{Documents Found?}
         U -- No --> S
-        U -- Yes --> V[Stage 4: Strict RAG Prompt + Terminology Mapping]
+        U -- Yes --> V[Stage 4: Strict RAG Prompt + Terminology Mapping + Escape Hatch]
         V --> W[Ollama Phi-3 LLM Stream]
         S --> X[Real-Time Output Stream]
         W --> X
@@ -170,8 +171,8 @@ streamlit run app_ui.py
 Features of the Web UI:
 - **Two-Stage LLM Pipeline:** Uses LLM term extractor chain followed by a strict regex Python gatekeeper.
 - **Metadata Filtered Search:** Performs exact metadata lookup (`filter={"Name": target_mineral}`).
+- **Escape Hatch Prompt Protection:** Explicitly outputs missing property notes to avoid blank responses.
 - **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
-- **Cached Vector Operations:** `@st.cache_resource` prevents re-indexing data on user actions.
 
 ---
 
@@ -225,39 +226,23 @@ from langchain_core.output_parsers import StrOutputParser
 
 REJECTION_MESSAGE = "⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**"
 
-def extract_target_mineral(translated_query: str, valid_names: list) -> str | None:
-    query_lower = translated_query.lower()
-    sorted_names = sorted([str(n) for n in valid_names if pd.notna(n)], key=len, reverse=True)
-    for name in sorted_names:
-        name_str = str(name).strip()
-        if not name_str: continue
-        if re.search(rf'\b{re.escape(name_str)}\b', query_lower, re.IGNORECASE):
-            return name_str
-        if len(name_str) >= 4 and name_str.lower() in query_lower:
-            return name_str
-    return None
+# Metadata construction filtering zero / 0.0
+metadata = {}
+for col in METADATA_COLS:
+    val = row.get(col)
+    if pd.notna(val) and str(val).strip() != "":
+        try:
+            if float(val) == 0: continue
+        except (ValueError, TypeError): pass
+        metadata[col] = format_value_with_units(col, val)
 
-def get_response_stream(query: str):
-    vectorstore, translator_chain, strict_chain, mineral_names = get_rag_components()
-
-    # Stage 1: LLM Term Extraction
-    translated_query = translator_chain.invoke({"query": query}).strip()
-
-    # Stage 2: Python Gatekeeper
-    target_mineral = extract_target_mineral(translated_query, mineral_names)
-    if not target_mineral:
-        def empty_response(): yield REJECTION_MESSAGE
-        return empty_response()
-
-    # Stage 3: Metadata Filter Search
-    docs = vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})
-    if not docs:
-        def empty_response(): yield REJECTION_MESSAGE
-        return empty_response()
-
-    # Stage 4: RAG Generation
-    formatted_context = format_docs(docs)
-    return strict_chain.stream({"context": formatted_context, "question": query})
+# Strict prompt with Rule 3 ESCAPE HATCH
+strict_rag_template = """...
+FORMATTING RULES:
+1. When retrieving mineral properties or details, output using a clear Bullet Points (條列式) format.
+2. Do NOT include any introductory prose, conversational filler, or concluding sentences before or after the bullet points.
+3. ESCAPE HATCH: If the specific property requested by the user is completely missing from the Context, you MUST output a bullet point explicitly stating that the data is unavailable (e.g., "- 化學成分: 資料庫無此數據"). Do NOT output a completely blank response.
+"""
 ```
 
 ---
@@ -274,6 +259,6 @@ def get_response_stream(query: str):
    - **Cause:** The Ollama background service is not active.
    - **Solution:** Execute `ollama serve` in a separate terminal before running the application script.
 
-2. **No Mineral Match Detected (`target_mineral is None`)**
-   - **Cause:** Stage 1 LLM extraction or Stage 2 Gatekeeper matching did not yield a valid mineral present in `minerals.csv`.
-   - **Solution:** System directly displays hardcoded rejection string without inviting LLM hallucinations.
+2. **Blank LLM Output Responses**
+   - **Cause:** LLM fears generating conversational filler when requested property is missing from context.
+   - **Solution:** Rule 3 ESCAPE HATCH forces Phi-3 to yield an explicit unavailable property note rather than a blank output.
