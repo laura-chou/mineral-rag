@@ -28,25 +28,27 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 
 The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`).
 
-Upon user query execution, a deterministic Python string-matching function (`extract_target_mineral`) scans the user query against valid CSV mineral names:
-- **When Mineral Name is Found:** Performs Chroma metadata-filtered vector search (`filter={"Name": target_mineral}`), injects context into a Strict RAG Prompt, and streams bullet-point responses with exact Traditional Chinese mineralogy terminology.
-- **When Mineral Name is Missing / Unmatched:** Bypasses LLM invocation completely and directly returns a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**` to eliminate hallucinations.
+Upon user query execution, a Two-Stage LLM Pipeline executes:
+1. **Stage 1 (LLM Term Extraction & Translation):** A lightweight `translator_chain` powered by Phi-3 translates user query terms (e.g. Traditional Chinese "青金石" or commercial name "Ruby") into formal English mineralogical names ("Lazurite", "Corundum").
+2. **Stage 2 (Python Gatekeeper):** An optimized regex matcher (`extract_target_mineral`) verifies the extracted English name against valid CSV records using word boundary matching (`\bname\b`) and length $\ge 4$ protection to prevent short-word false positives.
+3. **Stage 3 (Metadata Filtered Vector Retrieval):** Performs exact Chroma vector search (`filter={"Name": target_mineral}`).
+4. **Stage 4 (Strict Generation):** If matched, streams bullet-point responses formatted in exact Traditional Chinese mineralogy terminology. If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**`.
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
-- **Python String Name Matcher:** Uses regex-based `extract_target_mineral` matching against valid CSV mineral names.
+- **Two-Stage LLM Pipeline:** Uses LLM term extraction (`translator_chain`) replacing static dictionary aliases.
+- **Word Boundary & Short-Word Protection:** Regex `extract_target_mineral` matching prevents short name false positives (e.g., "In", "Tin").
 - **Metadata-Filtered Vector Retrieval:** Uses `vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})` to restrict vector lookup strictly to the identified mineral record.
 - **Zero-LLM Hallucination Rejection:** Hardcoded Python string rejection when no valid mineral name is identified in the prompt.
 - **Multilingual Dense Embeddings:** Leverages `paraphrase-multilingual-MiniLM-L12-v2` for cross-lingual semantic vector retrieval.
 - **Targeted Chemical Composition Ingestion:** Slices CSV columns J to EE (indices 9 to 135) to capture element composition (> 0).
 - **Dual Interface:** Interactive Command-Line Interface (`app.py`) and a real-time streaming Streamlit Web UI (`app_ui.py`).
-- **Real-Time Output Streaming:** `st.write_stream` ensures low-latency responsive chat rendering without UI freezing.
 
 ---
 
 ## Key Architectural Workflow
 
-The system processes data linearly through an ingestion pipeline, caches embeddings in a persistent vector database, and executes a deterministic interactive retrieval loop with Python string name interceptors and Chroma metadata filtering.
+The system processes data linearly through an ingestion pipeline, caches embeddings in a persistent vector database, and executes a two-stage LLM retrieval pipeline.
 
 ```mermaid
 graph TD
@@ -86,21 +88,22 @@ graph TD
     end
     class K,L Storage;
 
-    %% Stage 4: Name Interception & Metadata-Filtered Inference
-    subgraph S4 [4. Name Interception & Metadata-Filtered Inference]
-        N[CLI Input / Streamlit Chat Input] --> O[Gemology Alias Pre-processing]
-        O --> P[extract_target_mineral Name Interceptor]
-        P --> Q{Matched Valid Mineral Name?}
-        Q -- No --> S[Direct Python Rejection Yield <br><i>No LLM Invocation</i>]
-        Q -- Yes --> T[Chroma Metadata Filter Search: Name == target_mineral]
+    %% Stage 4: Two-Stage LLM Pipeline & Metadata-Filtered Inference
+    subgraph S4 [4. Two-Stage LLM Pipeline & Inference]
+        N[CLI Input / Streamlit Chat Input] --> O[Stage 1: LLM Term Extractor Chain]
+        O --> P[Formal English Mineral Name Output]
+        P --> Q[Stage 2: Python Gatekeeper Regex Matcher]
+        Q --> R{Matched Valid CSV Mineral?}
+        R -- No --> S[Direct Python Rejection Yield <br><i>No LLM Generation</i>]
+        R -- Yes --> T[Stage 3: Chroma Metadata Filter Search: Name == target_mineral]
         T --> U{Documents Found?}
         U -- No --> S
-        U -- Yes --> V[Strict RAG Prompt + Terminology Mapping]
+        U -- Yes --> V[Stage 4: Strict RAG Prompt + Terminology Mapping]
         V --> W[Ollama Phi-3 LLM Stream]
         S --> X[Real-Time Output Stream]
         W --> X
     end
-    class N,O,P,Q,S,T,U,V,W,X Inference;
+    class N,O,P,Q,R,S,T,U,V,W,X Inference;
 ```
 
 ---
@@ -165,7 +168,7 @@ streamlit run app_ui.py
 ```
 
 Features of the Web UI:
-- **Deterministic Name Interceptor:** Returns a direct string notice when no valid CSV mineral name is detected without invoking the LLM.
+- **Two-Stage LLM Pipeline:** Uses LLM term extractor chain followed by a strict regex Python gatekeeper.
 - **Metadata Filtered Search:** Performs exact metadata lookup (`filter={"Name": target_mineral}`).
 - **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
 - **Cached Vector Operations:** `@st.cache_resource` prevents re-indexing data on user actions.
@@ -197,6 +200,7 @@ The system behavior can be tuned by modifying parameters globally inside the run
 | `collection_metadata` | `{"hnsw:space": "cosine"}` | Chroma VectorDB | Distance metric configuration ensuring valid similarity relevance scoring. |
 | `EMBEDDING_MODEL_NAME` | `paraphrase-multilingual-MiniLM-L12-v2` | HuggingFaceEmbeddings | Multilingual sentence transformer model for dense vector generation. |
 | `LOCAL_CSV_PATH` | `minerals.csv` | Data Ingestion | Path to local CSV file to prioritize over Kaggle download. |
+| `translator_chain` | `translator_prompt \| llm` | Two-Stage Pipeline | Stage 1 LLM chain for translating and extracting formal English mineral names. |
 | `filter` | `{"Name": target_mineral}` | Chroma VectorDB | Metadata filtering restricting vector lookup strictly to identified mineral. |
 | `k` | `3` | Chroma VectorDB | Maximum document snippet count retrieved per query. |
 | `model` | `phi3` | ChatOllama | Target local LLM backend optimized for 4GB VRAM. |
@@ -221,32 +225,39 @@ from langchain_core.output_parsers import StrOutputParser
 
 REJECTION_MESSAGE = "⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**"
 
-def extract_target_mineral(query: str, valid_names: list) -> str | None:
-    query_lower = preprocess_query(query).lower()
+def extract_target_mineral(translated_query: str, valid_names: list) -> str | None:
+    query_lower = translated_query.lower()
     sorted_names = sorted([str(n) for n in valid_names if pd.notna(n)], key=len, reverse=True)
     for name in sorted_names:
-        if re.search(rf'\b{re.escape(name)}\b', query_lower, re.IGNORECASE) or name.lower() in query_lower:
-            return name
+        name_str = str(name).strip()
+        if not name_str: continue
+        if re.search(rf'\b{re.escape(name_str)}\b', query_lower, re.IGNORECASE):
+            return name_str
+        if len(name_str) >= 4 and name_str.lower() in query_lower:
+            return name_str
     return None
 
 def get_response_stream(query: str):
-    vectorstore, strict_chain, mineral_names = get_rag_components()
-    processed_query = preprocess_query(query)
+    vectorstore, translator_chain, strict_chain, mineral_names = get_rag_components()
 
-    target_mineral = extract_target_mineral(query, mineral_names)
+    # Stage 1: LLM Term Extraction
+    translated_query = translator_chain.invoke({"query": query}).strip()
+
+    # Stage 2: Python Gatekeeper
+    target_mineral = extract_target_mineral(translated_query, mineral_names)
     if not target_mineral:
-        def empty_response():
-            yield REJECTION_MESSAGE
+        def empty_response(): yield REJECTION_MESSAGE
         return empty_response()
 
-    docs = vectorstore.similarity_search(processed_query, k=3, filter={"Name": target_mineral})
+    # Stage 3: Metadata Filter Search
+    docs = vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})
     if not docs:
-        def empty_response():
-            yield REJECTION_MESSAGE
+        def empty_response(): yield REJECTION_MESSAGE
         return empty_response()
 
+    # Stage 4: RAG Generation
     formatted_context = format_docs(docs)
-    return strict_chain.stream({"context": formatted_context, "question": processed_query})
+    return strict_chain.stream({"context": formatted_context, "question": query})
 ```
 
 ---
@@ -264,5 +275,5 @@ def get_response_stream(query: str):
    - **Solution:** Execute `ollama serve` in a separate terminal before running the application script.
 
 2. **No Mineral Match Detected (`target_mineral is None`)**
-   - **Cause:** The query does not contain a formal mineral name or known gemology alias present in `minerals.csv`.
+   - **Cause:** Stage 1 LLM extraction or Stage 2 Gatekeeper matching did not yield a valid mineral present in `minerals.csv`.
    - **Solution:** System directly displays hardcoded rejection string without inviting LLM hallucinations.

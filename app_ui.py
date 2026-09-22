@@ -21,15 +21,6 @@ CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravit
 METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
 IGNORE_COLS = ['Unnamed: 0', 'count']
 
-MINERAL_ALIASES = {
-    "lapis lazuli": "Lazurite",
-    "ruby": "Corundum",
-    "sapphire": "Corundum",
-    "emerald": "Beryl",
-    "boulder opal": "Opal",
-    "amethyst": "Quartz"
-}
-
 def format_value_with_units(col, val):
     """Appends explicit physical units to relevant numerical mineral properties."""
     val_str = str(val).strip()
@@ -41,22 +32,23 @@ def format_value_with_units(col, val):
         return f"{val_str} g/mol"
     return val_str
 
-def preprocess_query(query: str) -> str:
-    """Pre-processes user query by mapping commercial gem/rock aliases to formal mineral names."""
-    processed_query = query
-    for alias, formal_name in MINERAL_ALIASES.items():
-        pattern = re.compile(re.escape(alias), re.IGNORECASE)
-        if pattern.search(processed_query):
-            processed_query = pattern.sub(f"{alias} ({formal_name})", processed_query)
-    return processed_query
+def extract_target_mineral(translated_query: str, valid_names: list) -> str | None:
+    """Matches the LLM-translated English query against valid mineral names."""
+    query_lower = translated_query.lower()
 
-def extract_target_mineral(query: str, valid_names: list) -> str | None:
-    """Extracts target mineral name from query using exact name matching against valid mineral names list."""
-    query_lower = preprocess_query(query).lower()
     sorted_names = sorted([str(n) for n in valid_names if pd.notna(n)], key=len, reverse=True)
+
     for name in sorted_names:
-        if re.search(rf'\b{re.escape(name)}\b', query_lower, re.IGNORECASE) or name.lower() in query_lower:
-            return name
+        name_str = str(name).strip()
+        if not name_str:
+            continue
+
+        if re.search(rf'\b{re.escape(name_str)}\b', query_lower, re.IGNORECASE):
+            return name_str
+
+        if len(name_str) >= 4 and name_str.lower() in query_lower:
+            return name_str
+
     return None
 
 @st.cache_resource(show_spinner="Initializing vector store...")
@@ -151,6 +143,17 @@ def get_rag_components():
     vectorstore, mineral_names = get_vectorstore()
     llm = ChatOllama(model="phi3", temperature=0)
 
+    # --- Stage 1: Translation and Name Extraction Chain ---
+    translation_template = """You are a mineralogy term extractor. Your ONLY job is to extract the target mineral or gemstone from the user's query and output its formal English mineralogical name.
+If the user uses Chinese (e.g. '青金石', '紅寶石') or commercial names (e.g. 'Lapis Lazuli', 'Ruby'), translate them to formal names ('Lazurite', 'Corundum').
+Output EXACTLY the English mineral name and nothing else. No punctuation, no explanation.
+
+Query: {query}
+Formal English Name:"""
+    translator_prompt = ChatPromptTemplate.from_template(translation_template)
+    translator_chain = translator_prompt | llm | StrOutputParser()
+
+    # --- Stage 2: Strict Generation Chain ---
     strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
 
 CRITICAL TERMINOLOGY TRANSLATION MAPPINGS:
@@ -176,29 +179,31 @@ Question: {question}
     strict_prompt = ChatPromptTemplate.from_template(strict_rag_template)
     strict_chain = strict_prompt | llm | StrOutputParser()
 
-    return vectorstore, strict_chain, mineral_names
+    return vectorstore, translator_chain, strict_chain, mineral_names
 
 def get_response_stream(query: str):
-    vectorstore, strict_chain, mineral_names = get_rag_components()
-    processed_query = preprocess_query(query)
+    vectorstore, translator_chain, strict_chain, mineral_names = get_rag_components()
 
-    # 1. Check if query contains valid mineral in CSV
-    target_mineral = extract_target_mineral(query, mineral_names)
+    # 1. First stage: Translate/extract formal English mineral name using LLM
+    translated_query = translator_chain.invoke({"query": query}).strip()
+
+    # 2. Second stage: Python Gatekeeper matching translated name against CSV records
+    target_mineral = extract_target_mineral(translated_query, mineral_names)
     if not target_mineral:
         def empty_response():
             yield REJECTION_MESSAGE
         return empty_response()
 
-    # 2. Filter Chroma vector search strictly by Name metadata
-    docs = vectorstore.similarity_search(processed_query, k=3, filter={"Name": target_mineral})
+    # 3. Third stage: Filter Chroma vector store strictly by Name metadata
+    docs = vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})
     if not docs:
         def empty_response():
             yield REJECTION_MESSAGE
         return empty_response()
 
-    # 3. Feed docs to strict_chain for LLM output
+    # 4. Fourth stage: Stream RAG answer from strict_chain
     formatted_context = format_docs(docs)
-    return strict_chain.stream({"context": formatted_context, "question": processed_query})
+    return strict_chain.stream({"context": formatted_context, "question": query})
 
 def main():
     st.set_page_config(page_title="Mineral Database RAG", page_icon="💎", layout="wide")
