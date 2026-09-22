@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import pandas as pd
 import kagglehub
 from langchain_core.documents import Document
@@ -12,6 +13,7 @@ from langchain_core.output_parsers import StrOutputParser
 
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
+EMBEDDING_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
 CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
 METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
@@ -48,20 +50,26 @@ def preprocess_query(query: str) -> str:
 
 def get_or_create_vectorstore(embeddings):
     """
-    Checks if Chroma DB exists locally.
-    If it exists and contains files, loads it directly.
-    Otherwise, loads local minerals.csv or downloads via kagglehub,
-    processes full dataset documents with categorized text and units, and persists to Chroma DB.
+    Checks if Chroma DB exists locally and tests embedding dimension compatibility.
+    If incompatible or missing, rebuilds the vector store using local minerals.csv or kagglehub.
+    Uses column J (idx 9) to EE (idx 135) for chemical composition attributes.
     """
     if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
-        print("✓ Loading existing vector store from ./chroma_db ...")
-        vectorstore = Chroma(
-            persist_directory=CHROMA_DB_DIR,
-            embedding_function=embeddings
-        )
-        return vectorstore
+        print("✓ Checking existing vector store in ./chroma_db ...")
+        try:
+            vectorstore = Chroma(
+                persist_directory=CHROMA_DB_DIR,
+                embedding_function=embeddings
+            )
+            # Dimension test query to ensure compatibility with paraphrase-multilingual-MiniLM-L12-v2
+            _ = vectorstore.similarity_search("test", k=1)
+            print("✓ Vector store loaded successfully and dimension verified.")
+            return vectorstore
+        except Exception as e:
+            print(f"⚠️ Vector store dimension mismatch or corruption detected ({e}). Removing old database...")
+            shutil.rmtree(CHROMA_DB_DIR, ignore_errors=True)
 
-    print("✓ Vector store not found locally. Initializing ingestion pipeline...")
+    print("✓ Initializing ingestion pipeline for multilingual vector store...")
 
     if os.path.exists(LOCAL_CSV_PATH):
         print("✓ Local minerals.csv detected. Loading directly...")
@@ -77,14 +85,11 @@ def get_or_create_vectorstore(embeddings):
 
     print(f"Loaded full dataset with total {len(df)} rows.")
 
-    print("Constructing documents with categorized text, units, metadata, and dynamic composition...")
+    print("Constructing documents with categorized text, units, metadata, and chemical composition (cols J:EE)...")
     documents = []
 
-    # Identify dynamic chemical composition columns
-    dynamic_chem_cols = [
-        col for col in df.columns
-        if col not in CORE_TEXT_COLS and col not in METADATA_COLS and col not in IGNORE_COLS
-    ]
+    # Extract chemical composition columns strictly from column index 9 (J) to 135 (EE)
+    dynamic_chem_cols = df.iloc[:, 9:135].columns.tolist()
 
     for _, row in df.iterrows():
         # 1. Build Core Text Part (skipping NaN, empty strings, and zero values)
@@ -100,7 +105,7 @@ def get_or_create_vectorstore(embeddings):
                 formatted_val = format_value_with_units(col, val)
                 core_parts.append(f"{col}: {formatted_val}")
 
-        # 2. Build Dynamic Chemical Composition Part (> 0)
+        # 2. Build Dynamic Chemical Composition Part from J to EE columns (> 0)
         chem_parts = []
         for col in dynamic_chem_cols:
             val = row.get(col)
@@ -134,31 +139,42 @@ def get_or_create_vectorstore(embeddings):
     print(f"Created {len(documents)} structured Document objects.")
 
     # Local Embedding & Storage
-    print("Generating HuggingFace embeddings and persisting into Chroma vector store...")
+    print("Generating multilingual HuggingFace embeddings and persisting into Chroma vector store...")
     vectorstore = Chroma.from_documents(
         documents=documents,
         embedding=embeddings,
         persist_directory=CHROMA_DB_DIR
     )
-    print("✓ Chroma DB successfully created and persisted.")
-    print("✓ Vector store updated with non-zero filtered properties.")
+    print("✓ Multilingual Chroma DB successfully created and persisted.")
     return vectorstore
 
 def main():
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     vectorstore = get_or_create_vectorstore(embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-    # RAG Retrieval Loop & Inference Chain with Strict Guardrails and Markdown Table Formatting
+    # RAG Retrieval Loop & Inference Chain with Strict Guardrails and Bullet Points Formatting
     print("Initializing ChatOllama Phi-3 LLM chain...")
     llm = ChatOllama(model="phi3", temperature=0)
 
-    template = """You are an expert assistant for a mineral database.
-Answer the question based ONLY on the following provided context.
-If multiple physical or optical properties are requested or available, present them cleanly in a Markdown table.
-If the context does not contain enough information to answer the question, explicitly state:
-"I cannot answer this question based on the provided context."
-Do not invent or extrapolate any information beyond what is strictly stated in the context.
+    template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
+
+CRITICAL TERMINOLOGY TRANSLATION MAPPINGS:
+When generating Chinese responses, you MUST strictly use the following exact mineralogical translations:
+- Mohs Hardness -> 莫氏硬度
+- Refractive Index -> 折射率
+- Crystal Structure -> 晶體結構
+- Specific Gravity -> 比重
+- Diaphaneity -> 透明度
+- Calculated Density -> 計算密度
+- Molar Mass -> 莫耳質量
+- Chemical Composition -> 化學成分
+
+FORMATTING RULES:
+1. When retrieving mineral properties or details, output using a clear Bullet Points (條列式) format.
+2. Do NOT include any introductory prose, conversational filler, or concluding sentences before or after the bullet points.
+3. If the context does not contain enough information to answer the question, state EXACTLY:
+"我無法根據提供的上下文回答這個問題。"
 
 Context:
 {context}

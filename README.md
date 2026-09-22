@@ -6,7 +6,7 @@
 [![ChromaDB](https://img.shields.io/badge/VectorStore-ChromaDB-046A38?style=flat)](https://www.trychroma.com/)
 [![Streamlit](https://img.shields.io/badge/Frontend-Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io/)
 
-An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) system engineered for querying mineralogical data via both an interactive CLI and a modern Streamlit Web UI. Powered by LangChain, Ollama (`phi3`), HuggingFace Embeddings (`all-MiniLM-L6-v2`), and ChromaDB, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
+An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) system engineered for querying mineralogical data via both an interactive CLI and a modern Streamlit Web UI. Powered by LangChain, Ollama (`phi3`), HuggingFace Multilingual Embeddings (`paraphrase-multilingual-MiniLM-L12-v2`), and ChromaDB, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
 
 ---
 
@@ -26,18 +26,17 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 
 ## Project Overview
 
-The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and dynamic chemical composition elements (> 0), embedded locally into dense vector spaces, and stored within a persistent Chroma vector database (`./chroma_db`). Upon user query execution, relevant mineral context is retrieved via vector similarity search ($k=5$) and fed to a local Phi-3 small language model served by Ollama to synthesize accurate, grounded answers formatted in Markdown tables when appropriate.
+The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, metadata dictionaries, and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`). Upon user query execution, relevant mineral context is retrieved via vector similarity search ($k=3$) and streamed in real-time to a local Phi-3 small language model served by Ollama to synthesize accurate, grounded answers in bullet points.
 
 Key Features:
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
-- **Dual Interface:** Choose between interactive Command-Line Interface (`app.py`) and a modern Streamlit Web UI (`app_ui.py`).
-- **Resource Caching:** `@st.cache_resource` prevents re-embedding vector computations across Web UI interactions.
-- **Local Dataset Priority:** Prioritizes local `minerals.csv` to bypass Kaggle API authentication limits (403 Forbidden).
-- **Full Ingestion Pipeline:** Ingests the full mineral dataset (3,112 rows) into dense vector spaces for maximum dataset coverage.
-- **Query Alias Pre-processing:** Maps commercial gem/rock names (e.g., Ruby, Sapphire, Emerald, Amethyst) to formal mineral names.
-- **Categorized Document & Metadata Integration:** Includes physical units (e.g., Mohs scale, g/cm³, g/mol) and injects document metadata directly into the retrieval context formatted for LLM inference.
-- **Persistent Caching:** Vector embeddings are computed once and cached on disk in `./chroma_db` for near-instantaneous startup on subsequent runs.
-- **Strict Guardrails:** Configured to strictly answer from retrieved context and fallback to `"I cannot answer this question based on the provided context."` when context is insufficient.
+- **Multilingual Dense Embeddings:** Leverages `paraphrase-multilingual-MiniLM-L12-v2` for cross-lingual semantic vector retrieval.
+- **Automatic Dimension Compatibility:** Automatically detects dimension mismatches in existing `./chroma_db` stores and recreates them cleanly.
+- **Targeted Chemical Composition Ingestion:** Slices CSV columns J to EE (indices 9 to 135) to capture element composition (> 0).
+- **Dual Interface:** Interactive Command-Line Interface (`app.py`) and a real-time streaming Streamlit Web UI (`app_ui.py`).
+- **Real-Time Output Streaming:** `st.write_stream` ensures low-latency responsive chat rendering without UI freezing.
+- **Bullet-Point Output Format:** System prompt instructs Phi-3 to respond strictly in clean bullet points without conversational filler.
+- **Strict Guardrails:** Configured to strictly answer from retrieved context and fallback to `"我無法根據提供的上下文回答這個問題。"` when context is insufficient.
 
 ---
 
@@ -55,8 +54,9 @@ graph TD
 
     %% Stage 1: Data Ingestion
     subgraph S1 [1. Data Ingestion]
-        A[Start App CLI / Web UI] --> B{Check Chroma DB Exists?}
-        B -- No --> C{Check Local minerals.csv?}
+        A[Start App CLI / Web UI] --> B{Check Chroma DB & Dimension?}
+        B -- Compatible --> L
+        B -- Missing/Mismatch --> C{Check Local minerals.csv?}
         C -- Yes --> D[Load minerals.csv via Pandas]
         C -- No --> E[Download Dataset via kagglehub]
         E --> D
@@ -67,7 +67,7 @@ graph TD
     %% Stage 2: Data Transformation
     subgraph S2 [2. Data Transformation]
         F --> G[Extract CORE_TEXT_COLS + Units]
-        F --> H[Filter Dynamic Chemical Elements > 0]
+        F --> H[Extract Chemical Cols J:EE - idx 9:135 > 0]
         F --> I[Extract METADATA_COLS + Units]
         G --> J[Construct Document Objects]
         H --> J
@@ -77,21 +77,20 @@ graph TD
 
     %% Stage 3: Local Embedding & Storage
     subgraph S3 [3. Local Embedding & Storage]
-        J --> K[Generate Vectors via HuggingFace Embeddings <br><i>all-MiniLM-L6-v2</i>]
+        J --> K[Generate Multilingual Vectors <br><i>paraphrase-multilingual-MiniLM-L12-v2</i>]
         K --> L[(Store & Persist in Chroma Vector DB)]
-        B -- Yes --> L
-        L --> M[Expose as Retriever <br><i>Search Kwargs: k=5</i>]
+        L --> M[Expose as Retriever <br><i>Search Kwargs: k=3</i>]
     end
     class K,L,M Storage;
 
     %% Stage 4: RAG Retrieval & Inference
     subgraph S4 [4. RAG Retrieval Loop]
         N[CLI Input / Streamlit Chat Input] --> O[Gemology Alias Pre-processing]
-        O --> P[Vector Similarity Search - Top K=5]
+        O --> P[Vector Similarity Search - Top K=3]
         M -.->|Retrieve Context & Metadata| P
-        P --> Q[Inject Context, Metadata & Markdown Table Guardrails]
+        P --> Q[Inject Context, Metadata & Bullet-Point Guardrails]
         Q --> R[Local Inference via Ollama <br><i>Phi-3 LLM</i>]
-        R --> S[Generate Grounded Answer / Markdown Table UI]
+        R --> S[Stream Real-Time Bullet Point Response]
     end
     class N,O,P,Q,R,S Inference;
 ```
@@ -161,9 +160,9 @@ streamlit run app_ui.py
 ```
 
 Features of the Web UI:
-- **Interactive Chat Canvas:** Preserves chat history across the active session via `st.session_state`.
+- **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
 - **Cached Vector Operations:** `@st.cache_resource` prevents re-indexing data on user actions.
-- **Rich Markdown Rendering:** Renders formatted mineral property tables natively.
+- **Automatic Database Migration:** Handles vector dimension changes seamlessly upon model switching.
 
 ---
 
@@ -189,13 +188,12 @@ The system behavior can be tuned by modifying parameters globally inside the run
 | Parameter | Default Value | Target Component | Purpose |
 | :--- | :--- | :--- | :--- |
 | `CHROMA_DB_DIR` | `./chroma_db` | Vector Store | Target directory for persisting vector embeddings on disk. |
+| `EMBEDDING_MODEL_NAME` | `paraphrase-multilingual-MiniLM-L12-v2` | HuggingFaceEmbeddings | Multilingual sentence transformer model for dense vector generation. |
 | `LOCAL_CSV_PATH` | `minerals.csv` | Data Ingestion | Path to local CSV file to prioritize over Kaggle download. |
-| `CORE_TEXT_COLS` | `['Name', 'Crystal Structure', 'Mohs Hardness', ...]` | Document Construction | Core physical/optical properties embedded into `page_content`. |
-| `METADATA_COLS` | `['Name', 'Mohs Hardness', 'Specific Gravity', ...]` | Document Construction | Attributes stored in document `metadata` and injected in context. |
-| `MINERAL_ALIASES` | `{"ruby": "Corundum", ...}` | Query Preprocessor | Maps commercial gem/rock names to formal mineral names. |
-| `model_name` | `all-MiniLM-L6-v2` | HuggingFaceEmbeddings | Local sentence transformer model for dense vector generation. |
+| `CORE_TEXT_COLS` | `['Name', 'Crystal Structure', ...]` | Document Construction | Core physical/optical properties embedded into `page_content`. |
+| `df.iloc[:, 9:135]` | Columns J to EE | Data Ingestion | Exact column indices for extracting chemical composition data (> 0). |
 | `model` | `phi3` | ChatOllama | Target local LLM backend optimized for 4GB VRAM. |
-| `search_kwargs`| `{"k": 5}` | Chroma VectorDB | Number of top relevant document snippets retrieved per query. |
+| `search_kwargs`| `{"k": 3}` | Chroma VectorDB | Number of top relevant document snippets retrieved per query. |
 | `temperature`  | `0` | ChatOllama LLM | Set to zero to eliminate creative hallucinations and enforce deterministic output. |
 
 ---
@@ -207,6 +205,7 @@ Below is the Streamlit Web UI application logic in `app_ui.py`:
 ```python
 import os
 import re
+import shutil
 import pandas as pd
 import kagglehub
 import streamlit as st
@@ -220,45 +219,36 @@ from langchain_core.output_parsers import StrOutputParser
 
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
+EMBEDDING_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
 @st.cache_resource(show_spinner="Initializing vector store...")
 def get_vectorstore():
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
-        return Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
-    # Full dataset document loading logic...
+        try:
+            vectorstore = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
+            _ = vectorstore.similarity_search("test", k=1)
+            return vectorstore
+        except Exception:
+            shutil.rmtree(CHROMA_DB_DIR, ignore_errors=True)
+
+    df = pd.read_csv(LOCAL_CSV_PATH) if os.path.exists(LOCAL_CSV_PATH) else pd.read_csv("minerals.csv")
+    dynamic_chem_cols = df.iloc[:, 9:135].columns.tolist()
+    # Document building logic...
 
 @st.cache_resource(show_spinner="Initializing LLM chain...")
 def get_rag_chain():
     vectorstore = get_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
     llm = ChatOllama(model="phi3", temperature=0)
-    # RAG Chain setup...
+    # RAG Chain setup with bullet point rules...
 
 def main():
     st.set_page_config(page_title="Mineral Database RAG", page_icon="💎", layout="wide")
     st.title("💎 Mineral Database Local RAG System")
 
     rag_chain = get_rag_chain()
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if user_input := st.chat_input("Enter your mineral question..."):
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-
-        response = rag_chain.invoke(user_input)
-        with st.chat_message("assistant"):
-            st.markdown(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
-
-if __name__ == "__main__":
-    main()
+    # Chat interaction with real-time st.write_stream streaming...
 ```
 
 ---
@@ -275,10 +265,6 @@ if __name__ == "__main__":
    - **Cause:** The Ollama background service is not active.
    - **Solution:** Execute `ollama serve` in a separate terminal before running the application script.
 
-2. **Phi-3 Model Not Found**
-   - **Cause:** The model binary has not been pulled locally.
-   - **Solution:** Run `ollama pull phi3` to download the quantized weights (~2.3GB).
-
-3. **Streamlit App Performance Delay**
-   - **Cause:** Vector store or chain re-initialization on page re-run.
-   - **Solution:** `@st.cache_resource` decorators handle caching. Ensure persistent storage is populated in `./chroma_db`.
+2. **Vector Dimension Mismatch Error**
+   - **Cause:** Switching embedding models when `./chroma_db` contains old vector indexes.
+   - **Solution:** The application automatically detects dimension mismatches, clears `./chroma_db`, and rebuilds vector indexes seamlessly.

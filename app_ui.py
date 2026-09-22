@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import pandas as pd
 import kagglehub
 import streamlit as st
@@ -13,6 +14,7 @@ from langchain_core.output_parsers import StrOutputParser
 
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
+EMBEDDING_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
 CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
 METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
@@ -49,12 +51,17 @@ def preprocess_query(query: str) -> str:
 
 @st.cache_resource(show_spinner="Initializing vector store...")
 def get_vectorstore():
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
-        return Chroma(
-            persist_directory=CHROMA_DB_DIR,
-            embedding_function=embeddings
-        )
+        try:
+            vectorstore = Chroma(
+                persist_directory=CHROMA_DB_DIR,
+                embedding_function=embeddings
+            )
+            _ = vectorstore.similarity_search("test", k=1)
+            return vectorstore
+        except Exception:
+            shutil.rmtree(CHROMA_DB_DIR, ignore_errors=True)
 
     if os.path.exists(LOCAL_CSV_PATH):
         df = pd.read_csv(LOCAL_CSV_PATH)
@@ -67,10 +74,8 @@ def get_vectorstore():
         df = pd.read_csv(csv_file)
 
     documents = []
-    dynamic_chem_cols = [
-        col for col in df.columns
-        if col not in CORE_TEXT_COLS and col not in METADATA_COLS and col not in IGNORE_COLS
-    ]
+    # Extract chemical composition columns strictly from column index 9 (J) to 135 (EE)
+    dynamic_chem_cols = df.iloc[:, 9:135].columns.tolist()
 
     for _, row in df.iterrows():
         core_parts = []
@@ -123,7 +128,7 @@ def get_vectorstore():
 @st.cache_resource(show_spinner="Initializing LLM chain...")
 def get_rag_chain():
     vectorstore = get_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
     llm = ChatOllama(model="phi3", temperature=0)
 
     template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
@@ -140,8 +145,8 @@ When generating Chinese responses, you MUST strictly use the following exact min
 - Chemical Composition -> 化學成分
 
 FORMATTING RULES:
-1. When retrieving physical or optical properties, output ONLY a clean Markdown table.
-2. Do NOT include any introductory prose, conversational filler, bullet point lists, or concluding sentences before or after the table.
+1. When retrieving mineral properties or details, output using a clear Bullet Points (條列式) format.
+2. Do NOT include any introductory prose, conversational filler, or concluding sentences before or after the bullet points.
 3. If the context does not contain enough information to answer the question, state EXACTLY:
 "我無法根據提供的上下文回答這個問題。"
 
@@ -188,14 +193,13 @@ def main():
         processed_query = preprocess_query(user_input)
 
         with st.chat_message("assistant"):
-            with st.spinner("Searching mineral database..."):
-                try:
-                    response = rag_chain.invoke(processed_query)
-                    st.markdown(response)
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                except Exception as e:
-                    error_msg = f"Error generating response: {e}"
-                    st.error(error_msg)
+            try:
+                # Stream responses in real-time to avoid freezing st.spinner
+                response = st.write_stream(rag_chain.stream(processed_query))
+                st.session_state.messages.append({"role": "assistant", "content": response})
+            except Exception as e:
+                error_msg = f"Error generating response: {e}"
+                st.error(error_msg)
 
 if __name__ == "__main__":
     main()
