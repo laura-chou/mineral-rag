@@ -31,7 +31,7 @@ def main():
             print("[Stage 2] Gatekeeper check against CSV records...")
             target_mineral = extract_target_mineral(translated_query, mineral_names)
             if not target_mineral:
-                log_missing_mineral(translated_query)
+                log_missing_mineral(user_input, translated_query)
                 print("\nResponse:")
                 print(REJECTION_MESSAGE)
                 continue
@@ -39,7 +39,7 @@ def main():
             print(f"[Stage 3] Filtering Chroma DB for '{target_mineral}'...")
             docs = vectorstore.similarity_search(user_input, k=3, filter={"Name": target_mineral})
             if not docs:
-                log_missing_mineral(translated_query)
+                log_missing_mineral(user_input, translated_query)
                 print("\nResponse:")
                 print(REJECTION_MESSAGE)
                 continue

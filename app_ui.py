@@ -14,29 +14,22 @@ def cached_get_rag_components():
 def get_response_stream(query: str):
     vectorstore, translator_chain, strict_chain, mineral_names = cached_get_rag_components()
 
-    with st.status("Analyzing mineral query...", expanded=True) as status:
-        st.write("Translating term...")
+    with st.spinner("Analyzing mineral query..."):
         translated_query = translator_chain.invoke({"query": query}).strip()
 
-        st.write("Matching CSV database...")
         target_mineral = extract_target_mineral(translated_query, mineral_names)
         if not target_mineral:
-            log_missing_mineral(translated_query)
-            status.update(label="Query complete - Mineral not found in database", state="error", expanded=False)
+            log_missing_mineral(query, translated_query)
             def empty_response():
                 yield REJECTION_MESSAGE
             return empty_response()
 
-        st.write(f"Filtering vector store for '{target_mineral}'...")
         docs = vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})
         if not docs:
-            log_missing_mineral(translated_query)
-            status.update(label="Query complete - Records unavailable", state="error", expanded=False)
+            log_missing_mineral(query, translated_query)
             def empty_response():
                 yield REJECTION_MESSAGE
             return empty_response()
-
-        status.update(label="Context retrieved successfully - Generating response...", state="complete", expanded=False)
 
     formatted_context = format_docs(docs)
     return strict_chain.stream({"context": formatted_context, "question": query})

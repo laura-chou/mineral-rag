@@ -29,17 +29,17 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, sanitized metadata dictionaries (excluding zero/null values), and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`).
 
 Upon user query execution, a Two-Stage LLM Pipeline with WRatio Fuzzy Matching and Missing Mineral Logging executes:
-1. **Stage 1 (LLM Term Extraction & Translation):** A lightweight `translator_chain` powered by Phi-3 translates user query terms into formal English mineralogical names ("Lazurite", "Corundum").
-2. **Stage 2 (Python Fuzzy Gatekeeper & Logging):** An optimized matcher (`extract_target_mineral`) verifies the extracted English name against valid CSV records using regex word boundary matching (`\bname\b`) and `process.extractOne(..., scorer=fuzz.WRatio)` (score $\ge 80$). If unmatched, logs query to `missing_minerals.txt` for dataset gap analysis.
+1. **Stage 1 (LLM Term Extraction & Translation):** A lightweight `translator_chain` powered by Phi-3 translates user query terms into formal English mineralogical names ("Lazurite", "Corundum") while preserving existing English terms.
+2. **Stage 2 (Python Fuzzy Gatekeeper & Logging):** An optimized matcher (`extract_target_mineral`) verifies the extracted English name against valid CSV records using regex word boundary matching (`\bname\b`) and `process.extractOne(..., scorer=fuzz.WRatio)` (score $\ge 80$). If unmatched, logs raw query and extracted term to `missing_minerals.txt` for dataset gap analysis.
 3. **Stage 3 (Metadata Filtered Vector Retrieval):** Performs exact Chroma vector search (`filter={"Name": target_mineral}`).
 4. **Stage 4 (Strict Generation in Pure English with "not specified" Syntax):** If matched, streams concise bullet-point responses formatted in pure English rules (`- [Property Name]: not specified` when context data is missing). If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **Exact data for this mineral is not found in the database. To ensure physical and chemical accuracy, the system declines to answer.**`.
 
 Key Features:
-- **Optimized pandas `itertuples()` Ingestion:** Boosts document construction and Chroma vector store setup speed.
+- **Clean UI Rendering:** `st.spinner("Analyzing mineral query...")` ensures no persistent error box artifacts remain above rejection alerts.
+- **Enhanced Missing Mineral Logging:** Records raw user queries and extracted terms (`[{timestamp}] Raw Query: "..." | Extracted Term: "..."`) in `missing_minerals.txt`.
+- **Term Preservation Prompting:** Stage 1 prompt strictly instructs Phi-3 to preserve existing English mineral names (e.g. "Boulder Opal") without inventing unrelated terms.
+- **Optimized pandas `to_dict('records')` Ingestion:** Boosts document construction and Chroma vector store setup speed while preserving column names with spaces.
 - **Fuzzy String Matcher (`fuzz.WRatio`):** Unified single-pass fuzzy matching (threshold score $\ge 80$) to resolve typos, casing, and word ordering.
-- **Missing Mineral Feedback Logging:** Automatically records unmatched queries into `missing_minerals.txt` with timestamps.
-- **Streamlit Status & Progress Indicators:** Uses `st.status("Analyzing mineral query...", expanded=True)` for real-time progress feedback.
-- **"not specified" Missing Property Syntax:** Instructs Phi-3 to explicitly state `- [Property Name]: not specified` when requested properties are missing from context.
 - **Modular Decoupled Codebase:** Cleanly separated into `mineral_rag.py` (core logic), `app_ui.py` (Streamlit UI), and `app_cli.py` (terminal debugger).
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
 
@@ -65,7 +65,7 @@ graph TD
         C -- Yes --> D[Load minerals.csv via Pandas]
         C -- No --> E[Download Dataset via kagglehub]
         E --> D
-        D --> F[Process Dataset via itertuples Vectorization]
+        D --> F[Process Dataset via to_dict records Vectorization]
     end
     class B,C,D,E,F Ingestion;
 
@@ -93,7 +93,7 @@ graph TD
         O --> P[Formal English Mineral Name Output]
         P --> Q[Stage 2: Python Gatekeeper <br><i>fuzz.WRatio score >= 80</i>]
         Q --> R{Matched Valid CSV Mineral?}
-        R -- No --> S[Log to missing_minerals.txt & Rejection Yield <br><i>No LLM Generation</i>]
+        R -- No --> S[Log Raw Query & Extracted Term to missing_minerals.txt & Rejection Yield <br><i>No LLM Generation</i>]
         R -- Yes --> T[Stage 3: Chroma Metadata Filter Search: Name == target_mineral]
         T --> U{Documents Found?}
         U -- No --> S
@@ -167,9 +167,9 @@ streamlit run app_ui.py
 ```
 
 Features of the Web UI:
-- **Visual Progress & Status Indicators:** `st.status("Analyzing mineral query...", expanded=True)` displays real-time step status updates.
+- **Clean UI Rendering:** `st.spinner("Analyzing mineral query...")` eliminates redundant red error status blocks above rejection notices.
 - **Two-Stage LLM Pipeline:** Uses LLM term extractor chain followed by a strict regex/fuzz.WRatio Python gatekeeper.
-- **Unmatched Query Logging:** Writes unmapped queries into `missing_minerals.txt`.
+- **Unmatched Query Logging:** Writes raw user queries and extracted terms into `missing_minerals.txt`.
 - **Metadata Filtered Search:** Performs exact metadata lookup (`filter={"Name": target_mineral}`).
 - **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
 
@@ -182,10 +182,10 @@ mineral-rag/
 │
 ├── chroma_db/               # Local persistent storage directory for ChromaDB embeddings
 ├── minerals.csv             # Local CSV dataset (Optional; loaded directly if present)
-├── missing_minerals.txt     # Log file recording unmatched query terms with timestamps
+├── missing_minerals.txt     # Log file recording unmatched raw queries and extracted terms
 ├── mineral_rag.py           # Core logic module (embeddings, vectorstore, LLM chains, fuzz.WRatio)
 ├── app_cli.py               # Terminal debugger CLI interface script
-├── app_ui.py                # Streamlit Web UI chat interface script with st.status
+├── app_ui.py                # Streamlit Web UI chat interface script
 ├── README.md                # System technical documentation and workflow specifications
 └── requirements.txt         # Declared python dependencies version sheet
 ```
@@ -199,7 +199,7 @@ The system behavior can be tuned by modifying parameters globally inside `minera
 | Parameter | Default Value | Target Component | Purpose |
 | :--- | :--- | :--- | :--- |
 | `CHROMA_DB_DIR` | `./chroma_db` | Vector Store | Target directory for persisting vector embeddings on disk. |
-| `LOG_FILE_PATH` | `missing_minerals.txt` | Feedback Loop | Local log file recording unmatched queries for dataset expansion. |
+| `LOG_FILE_PATH` | `missing_minerals.txt` | Feedback Loop | Local log file recording unmatched raw queries and extracted terms. |
 | `collection_metadata` | `{"hnsw:space": "cosine"}` | Chroma VectorDB | Distance metric configuration ensuring valid similarity relevance scoring. |
 | `EMBEDDING_MODEL_NAME` | `paraphrase-multilingual-MiniLM-L12-v2` | HuggingFaceEmbeddings | Multilingual sentence transformer model for dense vector generation. |
 | `LOCAL_CSV_PATH` | `minerals.csv` | Data Ingestion | Path to local CSV file to prioritize over Kaggle download. |
@@ -214,34 +214,26 @@ The system behavior can be tuned by modifying parameters globally inside `minera
 
 ## Implementation Code Snippet
 
-Below is the fuzzy matching and status indicator logic:
+Below is the Streamlit UI streaming and logging logic:
 
 ```python
 # In mineral_rag.py
-from thefuzz import fuzz, process
-
-def extract_target_mineral(translated_query: str, valid_names: list) -> str | None:
-    query_lower = translated_query.lower().strip()
-    if not query_lower: return None
-
-    clean_valid_names = [str(n).strip() for n in valid_names if pd.notna(n) and str(n).strip() != ""]
-
-    for name_str in sorted(clean_valid_names, key=len, reverse=True):
-        if re.search(rf'\b{re.escape(name_str)}\b', query_lower, re.IGNORECASE):
-            return name_str
-
-    best_match = process.extractOne(query_lower, clean_valid_names, scorer=fuzz.WRatio)
-    if best_match and best_match[1] >= 80:
-        return best_match[0]
-
-    return None
+def log_missing_mineral(raw_query: str, extracted_term: str = ""):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f'[{timestamp}] Raw Query: "{raw_query}" | Extracted Term: "{extracted_term}"\n'
+    with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
+        f.write(log_line)
 
 # In app_ui.py
-with st.status("Analyzing mineral query...", expanded=True) as status:
-    st.write("Translating term...")
-    translated_query = translator_chain.invoke({"query": query}).strip()
-    st.write("Matching CSV database...")
-    target_mineral = extract_target_mineral(translated_query, mineral_names)
+def get_response_stream(query: str):
+    vectorstore, translator_chain, strict_chain, mineral_names = cached_get_rag_components()
+    with st.spinner("Analyzing mineral query..."):
+        translated_query = translator_chain.invoke({"query": query}).strip()
+        target_mineral = extract_target_mineral(translated_query, mineral_names)
+        if not target_mineral:
+            log_missing_mineral(query, translated_query)
+            def empty_response(): yield REJECTION_MESSAGE
+            return empty_response()
 ```
 
 ---
@@ -260,4 +252,4 @@ with st.status("Analyzing mineral query...", expanded=True) as status:
 
 2. **Unmatched Queries Tracked**
    - **Cause:** Query mineral is not present in `minerals.csv`.
-   - **Solution:** Inspect `missing_minerals.txt` to review unmatched queries for future CSV dataset updates.
+   - **Solution:** Inspect `missing_minerals.txt` to review unmatched raw queries and extracted terms.

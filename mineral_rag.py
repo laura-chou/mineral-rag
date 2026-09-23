@@ -33,10 +33,10 @@ def format_value_with_units(col, val):
         return f"{val_str} g/mol"
     return val_str
 
-def log_missing_mineral(query: str):
-    """Logs unmatched query terms and timestamp to missing_minerals.txt."""
+def log_missing_mineral(raw_query: str, extracted_term: str = ""):
+    """Logs raw query, extracted term, and timestamp to missing_minerals.txt."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_line = f"[{timestamp}] Unmatched Mineral Query: {query}\n"
+    log_line = f'[{timestamp}] Raw Query: "{raw_query}" | Extracted Term: "{extracted_term}"\n'
     try:
         with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
             f.write(log_line)
@@ -184,6 +184,7 @@ def get_rag_components():
     translation_template = """You are an expert mineralogy term extractor and translator.
 Your ONLY task is to identify and extract the primary target mineral or gemstone from the user's query and output its formal English mineralogical name.
 If the query is in Chinese, a foreign language, or uses commercial gemological names (e.g. 'Ruby', 'Sapphire', 'Emerald', 'Lapis Lazuli', 'Amethyst'), translate and map it directly to its formal scientific mineralogical name (e.g. 'Corundum', 'Corundum', 'Beryl', 'Lazurite', 'Quartz').
+If the input query already contains an English mineral or gemstone name (e.g. 'Boulder Opal'), keep the exact original English name. DO NOT invent, substitute, or replace it with an unrelated mineral name.
 Output EXACTLY the formal English mineral name and nothing else. Do NOT output punctuation, explanations, or additional words.
 
 Query: {query}
