@@ -6,7 +6,7 @@
 [![ChromaDB](https://img.shields.io/badge/VectorStore-ChromaDB-046A38?style=flat)](https://www.trychroma.com/)
 [![Streamlit](https://img.shields.io/badge/Frontend-Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io/)
 
-An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) system engineered for querying mineralogical data via both an interactive CLI and a modern Streamlit Web UI. Powered by LangChain, Ollama (`phi3`), HuggingFace Multilingual Embeddings (`paraphrase-multilingual-MiniLM-L12-v2`), and ChromaDB with Metadata Filtering, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
+An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) system engineered for querying mineralogical data via both a terminal CLI debugger and a modern Streamlit Web UI. Powered by LangChain, Ollama (`phi3`), HuggingFace Multilingual Embeddings (`paraphrase-multilingual-MiniLM-L12-v2`), and ChromaDB with Metadata Filtering, this system runs fully offline on edge devices without relying on external cloud LLM APIs.
 
 ---
 
@@ -29,21 +29,21 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, sanitized metadata dictionaries (excluding zero/null values), and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`).
 
 Upon user query execution, a Two-Stage LLM Pipeline executes:
-1. **Stage 1 (LLM Term Extraction & Translation):** A lightweight `translator_chain` powered by Phi-3 translates user query terms (e.g. Traditional Chinese "青金石" or commercial name "Ruby") into formal English mineralogical names ("Lazurite", "Corundum").
+1. **Stage 1 (LLM Term Extraction & Translation):** A lightweight `translator_chain` powered by Phi-3 translates user query terms into formal English mineralogical names ("Lazurite", "Corundum").
 2. **Stage 2 (Python Gatekeeper):** An optimized regex matcher (`extract_target_mineral`) verifies the extracted English name against valid CSV records using word boundary matching (`\bname\b`) and length $\ge 4$ protection to prevent short-word false positives.
 3. **Stage 3 (Metadata Filtered Vector Retrieval):** Performs exact Chroma vector search (`filter={"Name": target_mineral}`).
-4. **Stage 4 (Strict Generation in Pure English):** If matched, streams concise bullet-point responses formatted in pure English rules to eliminate Chinese character hallucination issues in small local models. If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**`.
+4. **Stage 4 (Strict Generation in Pure English):** If matched, streams concise bullet-point responses formatted in pure English rules. If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **Exact data for this mineral is not found in the database. To ensure physical and chemical accuracy, the system declines to answer.**`.
 
 Key Features:
+- **Modular Decoupled Codebase:** Cleanly separated into `mineral_rag.py` (core logic), `app_ui.py` (Streamlit UI), and `app_cli.py` (terminal debugger).
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
 - **Two-Stage LLM Pipeline:** Uses LLM term extraction (`translator_chain`) replacing static dictionary aliases.
 - **Word Boundary & Short-Word Protection:** Regex `extract_target_mineral` matching prevents short name false positives (e.g., "In", "Tin").
-- **Pure English Generation Prompt:** Prevents simplified character hallucination and reasoning issues in local small LLMs.
+- **Pure English Output Enforcement:** All output strings, UI elements, rejection messages, and prompt templates are strictly in English.
 - **Sanitized Metadata Ingestion:** Filters out zero or `0.0` values from document metadata attributes.
 - **Metadata-Filtered Vector Retrieval:** Uses `vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})` to restrict vector lookup strictly to the identified mineral record.
 - **Zero-LLM Hallucination Rejection:** Hardcoded Python string rejection when no valid mineral name is identified in the prompt.
 - **Multilingual Dense Embeddings:** Leverages `paraphrase-multilingual-MiniLM-L12-v2` for cross-lingual semantic vector retrieval.
-- **Dual Interface:** Interactive Command-Line Interface (`app.py`) and a real-time streaming Streamlit Web UI (`app_ui.py`).
 
 ---
 
@@ -150,12 +150,12 @@ Install the required packages using `pip`:
 pip install pandas langchain langchain-community langchain-chroma langchain-huggingface langchain-ollama sentence-transformers kagglehub streamlit
 ```
 
-### 2. Run the Command-Line Application
+### 2. Run the Terminal Debugger CLI
 
 Execute the interactive command-line interface:
 
 ```bash
-python app.py
+python app_cli.py
 ```
 
 ---
@@ -171,7 +171,7 @@ streamlit run app_ui.py
 Features of the Web UI:
 - **Two-Stage LLM Pipeline:** Uses LLM term extractor chain followed by a strict regex Python gatekeeper.
 - **Metadata Filtered Search:** Performs exact metadata lookup (`filter={"Name": target_mineral}`).
-- **Pure English Strict Prompt:** Prevents simplified character hallucination and output errors in local models.
+- **Strict English Enforcement:** All UI messages, rejection alerts, and generated outputs are in English.
 - **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
 
 ---
@@ -183,8 +183,9 @@ mineral-rag/
 │
 ├── chroma_db/               # Local persistent storage directory for ChromaDB embeddings
 ├── minerals.csv             # Local CSV dataset (Optional; loaded directly if present)
-├── app.py                   # Main Python CLI entrypoint execution script
-├── app_ui.py                # Streamlit Web UI chat application
+├── mineral_rag.py           # Core logic module (embeddings, vectorstore, LLM chains)
+├── app_cli.py               # Terminal debugger CLI interface script
+├── app_ui.py                # Streamlit Web UI chat interface script
 ├── README.md                # System technical documentation and workflow specifications
 └── requirements.txt         # Declared python dependencies version sheet
 ```
@@ -193,7 +194,7 @@ mineral-rag/
 
 ## Configuration & Parameters
 
-The system behavior can be tuned by modifying parameters globally inside the runtime execution file.
+The system behavior can be tuned by modifying parameters globally inside `mineral_rag.py`.
 
 | Parameter | Default Value | Target Component | Purpose |
 | :--- | :--- | :--- | :--- |
@@ -214,32 +215,39 @@ The system behavior can be tuned by modifying parameters globally inside the run
 Below is the Streamlit Web UI application logic in `app_ui.py`:
 
 ```python
-import os
-import re
-import pandas as pd
 import streamlit as st
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from mineral_rag import (
+    get_rag_components,
+    extract_target_mineral,
+    format_docs,
+    REJECTION_MESSAGE
+)
 
-REJECTION_MESSAGE = "⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**"
+@st.cache_resource(show_spinner="Initializing RAG components...")
+def cached_get_rag_components():
+    return get_rag_components()
 
-strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
+def get_response_stream(query: str):
+    vectorstore, translator_chain, strict_chain, mineral_names = cached_get_rag_components()
 
-STRICT GENERATION RULES:
-1. Do NOT include any greetings (e.g., 'Hello', 'Hi'), introductory prose, conversational filler, or concluding remarks. Start directly with the data.
-2. If the requested property exists in the Context, output it using a concise Bullet Points format.
-3. If a requested property is missing or invalid in the Context, output:
-   - [Property Name]: Data unavailable in database
-4. NEVER invent, hallucinate, or assume any properties not explicitly stated in the Context.
+    # Stage 1: Translate and extract formal English mineral name
+    translated_query = translator_chain.invoke({"query": query}).strip()
 
-Context:
-{context}
+    # Stage 2: Python Gatekeeper regex validation
+    target_mineral = extract_target_mineral(translated_query, mineral_names)
+    if not target_mineral:
+        def empty_response(): yield REJECTION_MESSAGE
+        return empty_response()
 
-Question: {question}
-"""
+    # Stage 3: Metadata filter vector lookup
+    docs = vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})
+    if not docs:
+        def empty_response(): yield REJECTION_MESSAGE
+        return empty_response()
+
+    # Stage 4: Stream response
+    formatted_context = format_docs(docs)
+    return strict_chain.stream({"context": formatted_context, "question": query})
 ```
 
 ---
@@ -256,6 +264,6 @@ Question: {question}
    - **Cause:** The Ollama background service is not active.
    - **Solution:** Execute `ollama serve` in a separate terminal before running the application script.
 
-2. **Chinese Character Hallucination / Simplified Character Output**
-   - **Cause:** Local small LLM (Phi-3) hallucinating when generating Traditional Chinese translations directly.
-   - **Solution:** `strict_rag_template` enforces pure English output generation rules.
+2. **No Mineral Match Detected (`target_mineral is None`)**
+   - **Cause:** Stage 1 LLM extraction or Stage 2 Gatekeeper matching did not yield a valid mineral present in `minerals.csv`.
+   - **Solution:** System directly displays hardcoded rejection string without inviting LLM hallucinations.

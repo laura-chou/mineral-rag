@@ -8,13 +8,12 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
 EMBEDDING_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
-REJECTION_MESSAGE = "⚠️ **資料庫中查無此礦物的精確數據。為確保物理與化學參數之嚴謹性，系統拒絕回答。**"
+REJECTION_MESSAGE = "⚠️ **Exact data for this mineral is not found in the database. To ensure physical and chemical accuracy, the system declines to answer.**"
 
 CORE_TEXT_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Diaphaneity', 'Optical', 'Refractive Index', 'Dispersion']
 METADATA_COLS = ['Name', 'Crystal Structure', 'Mohs Hardness', 'Specific Gravity', 'Calculated Density', 'Molar Mass', 'Molar Volume']
@@ -164,7 +163,7 @@ def get_rag_components():
 
     # --- Stage 1: Translation and Name Extraction Chain ---
     translation_template = """You are a mineralogy term extractor. Your ONLY job is to extract the target mineral or gemstone from the user's query and output its formal English mineralogical name.
-If the user uses Chinese (e.g. '青金石', '紅寶石') or commercial names (e.g. 'Lapis Lazuli', 'Ruby'), translate them to formal names ('Lazurite', 'Corundum').
+If the user uses commercial or foreign names, translate them to formal English mineralogical names.
 Output EXACTLY the English mineral name and nothing else. No punctuation, no explanation.
 
 Query: {query}
@@ -191,53 +190,3 @@ Question: {question}
     strict_chain = strict_prompt | llm | StrOutputParser()
 
     return vectorstore, translator_chain, strict_chain, mineral_names
-
-def main():
-    vectorstore, translator_chain, strict_chain, mineral_names = get_rag_components()
-
-    print("\n" + "="*50)
-    print(" Mineral Database RAG Retrieval System (CLI)")
-    print("="*50)
-    print("System ready! You can ask your questions at any time.")
-
-    while True:
-        try:
-            user_input = input("\nEnter your mineral question (type 'exit' or 'quit' to leave): ").strip()
-            if not user_input:
-                continue
-            if user_input.lower() in ["exit", "quit"]:
-                print("\nThank you for using the Mineral RAG system. Goodbye!")
-                break
-
-            print("\n[Stage 1] Extracting formal mineral name...")
-            translated_query = translator_chain.invoke({"query": user_input}).strip()
-            print(f"Extracted English Term: {translated_query}")
-
-            print("[Stage 2] Gatekeeper check against CSV records...")
-            target_mineral = extract_target_mineral(translated_query, mineral_names)
-            if not target_mineral:
-                print("\nResponse:")
-                print(REJECTION_MESSAGE)
-                continue
-
-            print(f"[Stage 3] Filtering Chroma DB for '{target_mineral}'...")
-            docs = vectorstore.similarity_search(user_input, k=3, filter={"Name": target_mineral})
-            if not docs:
-                print("\nResponse:")
-                print(REJECTION_MESSAGE)
-                continue
-
-            print("[Stage 4] Generating grounded answer...")
-            print("\nResponse:")
-            formatted_context = format_docs(docs)
-            response = strict_chain.invoke({"context": formatted_context, "question": user_input})
-            print(response)
-
-        except KeyboardInterrupt:
-            print("\n\nProgram interrupted by user. Goodbye!")
-            break
-        except Exception as e:
-            print(f"\nError occurred: {e}")
-
-if __name__ == "__main__":
-    main()
