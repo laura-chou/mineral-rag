@@ -3,6 +3,7 @@ import re
 import shutil
 import pandas as pd
 import kagglehub
+from thefuzz import fuzz, process
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
@@ -31,21 +32,30 @@ def format_value_with_units(col, val):
     return val_str
 
 def extract_target_mineral(translated_query: str, valid_names: list) -> str | None:
-    """Matches the LLM-translated English query against valid mineral names."""
-    query_lower = translated_query.lower()
+    """Matches the LLM-translated English query against valid mineral names using exact regex and thefuzz fuzzy string matching."""
+    query_lower = translated_query.lower().strip()
+    if not query_lower:
+        return None
 
-    sorted_names = sorted([str(n) for n in valid_names if pd.notna(n)], key=len, reverse=True)
+    clean_valid_names = [str(n).strip() for n in valid_names if pd.notna(n) and str(n).strip() != ""]
+    sorted_names = sorted(clean_valid_names, key=len, reverse=True)
 
-    for name in sorted_names:
-        name_str = str(name).strip()
-        if not name_str:
-            continue
-
+    # 1. Exact Word Boundary Regex Match
+    for name_str in sorted_names:
         if re.search(rf'\b{re.escape(name_str)}\b', query_lower, re.IGNORECASE):
             return name_str
 
         if len(name_str) >= 4 and name_str.lower() in query_lower:
             return name_str
+
+    # 2. Fuzzy String Match using thefuzz (threshold score >= 80)
+    best_match = process.extractOne(query_lower, clean_valid_names, scorer=fuzz.partial_ratio)
+    if best_match and best_match[1] >= 80:
+        return best_match[0]
+
+    best_ratio_match = process.extractOne(query_lower, clean_valid_names, scorer=fuzz.ratio)
+    if best_ratio_match and best_ratio_match[1] >= 80:
+        return best_ratio_match[0]
 
     return None
 
@@ -162,9 +172,10 @@ def get_rag_components():
     llm = ChatOllama(model="phi3", temperature=0)
 
     # --- Stage 1: Translation and Name Extraction Chain ---
-    translation_template = """You are a mineralogy term extractor. Your ONLY job is to extract the target mineral or gemstone from the user's query and output its formal English mineralogical name.
-If the user uses commercial or foreign names, translate them to formal English mineralogical names.
-Output EXACTLY the English mineral name and nothing else. No punctuation, no explanation.
+    translation_template = """You are an expert mineralogy term extractor and translator.
+Your ONLY task is to identify and extract the primary target mineral or gemstone from the user's query and output its formal English mineralogical name.
+If the query is in Chinese, a foreign language, or uses commercial gemological names (e.g. 'Ruby', 'Sapphire', 'Emerald', 'Lapis Lazuli', 'Amethyst'), translate and map it directly to its formal scientific mineralogical name (e.g. 'Corundum', 'Corundum', 'Beryl', 'Lazurite', 'Quartz').
+Output EXACTLY the formal English mineral name and nothing else. Do NOT output punctuation, explanations, or additional words.
 
 Query: {query}
 Formal English Name:"""
