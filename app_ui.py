@@ -2,6 +2,7 @@ import streamlit as st
 from mineral_rag import (
     get_rag_components,
     extract_target_mineral,
+    log_missing_mineral,
     format_docs,
     REJECTION_MESSAGE
 )
@@ -13,24 +14,30 @@ def cached_get_rag_components():
 def get_response_stream(query: str):
     vectorstore, translator_chain, strict_chain, mineral_names = cached_get_rag_components()
 
-    # 1. First stage: Translate/extract formal English mineral name using LLM
-    translated_query = translator_chain.invoke({"query": query}).strip()
+    with st.status("Analyzing mineral query...", expanded=True) as status:
+        st.write("Translating term...")
+        translated_query = translator_chain.invoke({"query": query}).strip()
 
-    # 2. Second stage: Python Gatekeeper matching translated name against CSV records
-    target_mineral = extract_target_mineral(translated_query, mineral_names)
-    if not target_mineral:
-        def empty_response():
-            yield REJECTION_MESSAGE
-        return empty_response()
+        st.write("Matching CSV database...")
+        target_mineral = extract_target_mineral(translated_query, mineral_names)
+        if not target_mineral:
+            log_missing_mineral(translated_query)
+            status.update(label="Query complete - Mineral not found in database", state="error", expanded=False)
+            def empty_response():
+                yield REJECTION_MESSAGE
+            return empty_response()
 
-    # 3. Third stage: Filter Chroma vector store strictly by Name metadata
-    docs = vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})
-    if not docs:
-        def empty_response():
-            yield REJECTION_MESSAGE
-        return empty_response()
+        st.write(f"Filtering vector store for '{target_mineral}'...")
+        docs = vectorstore.similarity_search(query, k=3, filter={"Name": target_mineral})
+        if not docs:
+            log_missing_mineral(translated_query)
+            status.update(label="Query complete - Records unavailable", state="error", expanded=False)
+            def empty_response():
+                yield REJECTION_MESSAGE
+            return empty_response()
 
-    # 4. Fourth stage: Stream RAG answer from strict_chain
+        status.update(label="Context retrieved successfully - Generating response...", state="complete", expanded=False)
+
     formatted_context = format_docs(docs)
     return strict_chain.stream({"context": formatted_context, "question": query})
 

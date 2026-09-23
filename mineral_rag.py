@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+from datetime import datetime
 import pandas as pd
 import kagglehub
 from thefuzz import fuzz, process
@@ -13,6 +14,7 @@ from langchain_core.output_parsers import StrOutputParser
 
 CHROMA_DB_DIR = "./chroma_db"
 LOCAL_CSV_PATH = "minerals.csv"
+LOG_FILE_PATH = "missing_minerals.txt"
 EMBEDDING_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 REJECTION_MESSAGE = "⚠️ **Exact data for this mineral is not found in the database. To ensure physical and chemical accuracy, the system declines to answer.**"
 
@@ -31,8 +33,18 @@ def format_value_with_units(col, val):
         return f"{val_str} g/mol"
     return val_str
 
+def log_missing_mineral(query: str):
+    """Logs unmatched query terms and timestamp to missing_minerals.txt."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] Unmatched Mineral Query: {query}\n"
+    try:
+        with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
+            f.write(log_line)
+    except Exception as e:
+        print(f"Failed to log missing mineral: {e}")
+
 def extract_target_mineral(translated_query: str, valid_names: list) -> str | None:
-    """Matches the LLM-translated English query against valid mineral names using exact regex and thefuzz fuzzy string matching."""
+    """Matches the LLM-translated English query against valid mineral names using exact regex and fuzz.WRatio fuzzy matching."""
     query_lower = translated_query.lower().strip()
     if not query_lower:
         return None
@@ -48,21 +60,17 @@ def extract_target_mineral(translated_query: str, valid_names: list) -> str | No
         if len(name_str) >= 4 and name_str.lower() in query_lower:
             return name_str
 
-    # 2. Fuzzy String Match using thefuzz (threshold score >= 80)
-    best_match = process.extractOne(query_lower, clean_valid_names, scorer=fuzz.partial_ratio)
+    # 2. Optimized Fuzzy String Match using process.extractOne with fuzz.WRatio (threshold score >= 80)
+    best_match = process.extractOne(query_lower, clean_valid_names, scorer=fuzz.WRatio)
     if best_match and best_match[1] >= 80:
         return best_match[0]
-
-    best_ratio_match = process.extractOne(query_lower, clean_valid_names, scorer=fuzz.ratio)
-    if best_ratio_match and best_ratio_match[1] >= 80:
-        return best_ratio_match[0]
 
     return None
 
 def get_or_create_vectorstore(embeddings):
     """
     Loads or creates Chroma DB vector store and returns (vectorstore, mineral_names).
-    Filters out zero or 0.0 values from metadata attributes.
+    Uses df.to_dict('records') for fast row iteration preserving exact column names with spaces.
     """
     if os.path.exists(LOCAL_CSV_PATH):
         df = pd.read_csv(LOCAL_CSV_PATH)
@@ -94,15 +102,16 @@ def get_or_create_vectorstore(embeddings):
     print("✓ Initializing ingestion pipeline for multilingual vector store...")
     print(f"Loaded full dataset with total {len(df)} rows.")
 
-    print("Constructing documents with categorized text, units, metadata, and chemical composition (cols J:EE)...")
+    print("Constructing documents with fast to_dict('records') iteration (cols J:EE)...")
     documents = []
 
     dynamic_chem_cols = df.iloc[:, 9:135].columns.tolist()
 
-    for _, row in df.iterrows():
+    # Fast iteration using to_dict('records') preserving exact column names with spaces
+    for row_dict in df.to_dict('records'):
         core_parts = []
         for col in CORE_TEXT_COLS:
-            val = row.get(col)
+            val = row_dict.get(col)
             if pd.notna(val) and str(val).strip() != "":
                 try:
                     if float(val) == 0:
@@ -114,7 +123,7 @@ def get_or_create_vectorstore(embeddings):
 
         chem_parts = []
         for col in dynamic_chem_cols:
-            val = row.get(col)
+            val = row_dict.get(col)
             if pd.notna(val):
                 try:
                     num_val = float(val)
@@ -131,7 +140,7 @@ def get_or_create_vectorstore(embeddings):
 
         metadata = {}
         for col in METADATA_COLS:
-            val = row.get(col)
+            val = row_dict.get(col)
             if pd.notna(val) and str(val).strip() != "":
                 try:
                     if float(val) == 0:
@@ -182,14 +191,14 @@ Formal English Name:"""
     translator_prompt = ChatPromptTemplate.from_template(translation_template)
     translator_chain = translator_prompt | llm | StrOutputParser()
 
-    # --- Stage 2: Strict Generation Chain (Pure English Prompt) ---
+    # --- Stage 2: Strict Generation Chain (Pure English Prompt with "not specified" output rule) ---
     strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
 
 STRICT GENERATION RULES:
 1. Do NOT include any greetings (e.g., 'Hello', 'Hi'), introductory prose, conversational filler, or concluding remarks. Start directly with the data.
 2. If the requested property exists in the Context, output it using a concise Bullet Points format.
 3. If a requested property is missing or invalid in the Context, output:
-   - [Property Name]: Data unavailable in database
+   - [Property Name]: not specified
 4. NEVER invent, hallucinate, or assume any properties not explicitly stated in the Context.
 
 Context:
