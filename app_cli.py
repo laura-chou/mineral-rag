@@ -24,12 +24,19 @@ def main():
                 print("\nThank you for using the Mineral RAG system. Goodbye!")
                 break
 
-            print("\n[Stage 1] Extracting formal mineral name...")
-            translated_query = translator_chain.invoke({"query": user_input}).strip()
-            print(f"Extracted English Term: {translated_query}")
+            # 1. Direct Match Bypass
+            direct_match = extract_target_mineral(user_input, mineral_names)
+            if direct_match:
+                print(f"\n[Direct Match Bypass] Found exact mineral in raw query: {direct_match}")
+                target_mineral = direct_match
+                translated_query = user_input
+            else:
+                print("\n[Stage 1] Extracting formal mineral name...")
+                translated_query = translator_chain.invoke({"query": user_input}).strip()
+                print(f"Extracted English Term: {translated_query}")
+                print("[Stage 2] Gatekeeper check against CSV records...")
+                target_mineral = extract_target_mineral(translated_query, mineral_names)
 
-            print("[Stage 2] Gatekeeper check against CSV records...")
-            target_mineral = extract_target_mineral(translated_query, mineral_names)
             if not target_mineral:
                 log_missing_mineral(user_input, translated_query)
                 print("\nResponse:")

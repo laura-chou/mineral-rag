@@ -28,17 +28,18 @@ An enterprise-grade, privacy-focused Local Retrieval-Augmented Generation (RAG) 
 
 The Local RAG System for Mineral Database provides deterministic, hallucination-resistant query-answering over mineral datasets. Raw data is automatedly ingested via local `minerals.csv` (or downloaded via `kagglehub`), transformed into structured `Document` objects with explicit physical units, sanitized metadata dictionaries (excluding zero/null values), and chemical composition elements extracted from CSV columns J to EE (indices 9–135), embedded locally into dense vector spaces via `paraphrase-multilingual-MiniLM-L12-v2`, and stored within a persistent Chroma vector database (`./chroma_db`).
 
-Upon user query execution, a Two-Stage LLM Pipeline with WRatio Fuzzy Matching and Missing Mineral Logging executes:
-1. **Stage 1 (LLM Term Extraction & Translation):** A lightweight `translator_chain` powered by Phi-3 translates user query terms into formal English mineralogical names ("Lazurite", "Corundum") while preserving existing English terms.
-2. **Stage 2 (Python Fuzzy Gatekeeper & Logging):** An optimized matcher (`extract_target_mineral`) verifies the extracted English name against valid CSV records using regex word boundary matching (`\bname\b`) and `process.extractOne(..., scorer=fuzz.WRatio)` (score $\ge 80$). If unmatched, logs raw query and extracted term to `missing_minerals.txt` for dataset gap analysis.
-3. **Stage 3 (Metadata Filtered Vector Retrieval):** Performs exact Chroma vector search (`filter={"Name": target_mineral}`).
-4. **Stage 4 (Strict Generation in Pure English with "not specified" Syntax):** If matched, streams concise bullet-point responses formatted in pure English rules (`- [Property Name]: not specified` when context data is missing). If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **Exact data for this mineral is not found in the database. To ensure physical and chemical accuracy, the system declines to answer.**`.
+Upon user query execution, a Two-Stage Pipeline with Direct Match Bypass & Fuzzy Matching executes:
+1. **Direct Match Bypass:** Raw user inputs are immediately checked against CSV mineral records. If an exact English term (e.g. "Boulder-Opal", "Lazurite") is matched, Stage 1 LLM extraction is bypassed entirely for maximum speed and zero term contamination.
+2. **Stage 1 (Simplified Term Extraction):** If no direct match is found, a minimal `translator_chain` powered by Phi-3 translates foreign or commercial query terms into formal English mineral names without example prompt contamination.
+3. **Stage 2 (Python Fuzzy Gatekeeper & Logging):** An optimized matcher (`extract_target_mineral`) verifies the English name against valid CSV records using regex word boundary matching (`\bname\b`) and `process.extractOne(..., scorer=fuzz.WRatio)` (score $\ge 80$). If unmatched, logs raw query and extracted term to `missing_minerals.txt`.
+4. **Stage 3 (Metadata Filtered Vector Retrieval):** Performs exact Chroma vector search (`filter={"Name": target_mineral}`).
+5. **Stage 4 (Strict Pure-English Generation with LASER FOCUS):** If matched, streams concise bullet-point responses focusing exclusively on the specific requested property. If unmatched, bypasses LLM generation and directly yields a hardcoded rejection notice: `⚠️ **Exact data for this mineral is not found in the database. To ensure physical and chemical accuracy, the system declines to answer.**`.
 
 Key Features:
-- **Clean UI Rendering:** `st.spinner("Analyzing mineral query...")` ensures no persistent error box artifacts remain above rejection alerts.
+- **Direct Match Bypass:** Bypasses LLM term translation when valid English mineral names exist directly in the user query.
+- **LASER FOCUS Prompt Directive:** Instructs Phi-3 to answer only the requested property rather than dumping all context columns.
+- **Clean UI Rendering:** `st.spinner("Analyzing mineral query...")` eliminates redundant red error status blocks above rejection notices.
 - **Enhanced Missing Mineral Logging:** Records raw user queries and extracted terms (`[{timestamp}] Raw Query: "..." | Extracted Term: "..."`) in `missing_minerals.txt`.
-- **Term Preservation Prompting:** Stage 1 prompt strictly instructs Phi-3 to preserve existing English mineral names (e.g. "Boulder Opal") without inventing unrelated terms.
-- **Optimized pandas `to_dict('records')` Ingestion:** Boosts document construction and Chroma vector store setup speed while preserving column names with spaces.
 - **Fuzzy String Matcher (`fuzz.WRatio`):** Unified single-pass fuzzy matching (threshold score $\ge 80$) to resolve typos, casing, and word ordering.
 - **Modular Decoupled Codebase:** Cleanly separated into `mineral_rag.py` (core logic), `app_ui.py` (Streamlit UI), and `app_cli.py` (terminal debugger).
 - **100% Air-Gapped Execution:** Operates entirely locally with zero telemetry or data egress to third-party endpoints.
@@ -87,17 +88,18 @@ graph TD
     end
     class K,L Storage;
 
-    %% Stage 4: Two-Stage LLM Pipeline & Metadata-Filtered Inference
-    subgraph S4 [4. Two-Stage LLM Pipeline & Inference]
-        N[CLI Input / Streamlit Chat Input] --> O[Stage 1: LLM Term Extractor Chain]
-        O --> P[Formal English Mineral Name Output]
+    %% Stage 4: Direct Match Bypass & Two-Stage Inference
+    subgraph S4 [4. Direct Match Bypass & Two-Stage Inference]
+        N[CLI Input / Streamlit Chat Input] --> O{Direct Match in Raw Query?}
+        O -- Yes --> T
+        O -- No --> P[Stage 1: Minimal LLM Term Extractor Chain]
         P --> Q[Stage 2: Python Gatekeeper <br><i>fuzz.WRatio score >= 80</i>]
         Q --> R{Matched Valid CSV Mineral?}
         R -- No --> S[Log Raw Query & Extracted Term to missing_minerals.txt & Rejection Yield <br><i>No LLM Generation</i>]
         R -- Yes --> T[Stage 3: Chroma Metadata Filter Search: Name == target_mineral]
         T --> U{Documents Found?}
         U -- No --> S
-        U -- Yes --> V[Stage 4: Strict Pure English RAG Generation Prompt]
+        U -- Yes --> V[Stage 4: Pure English RAG Prompt + LASER FOCUS Directive]
         V --> W[Ollama Phi-3 LLM Stream]
         S --> X[Real-Time Output Stream]
         W --> X
@@ -167,8 +169,8 @@ streamlit run app_ui.py
 ```
 
 Features of the Web UI:
-- **Clean UI Rendering:** `st.spinner("Analyzing mineral query...")` eliminates redundant red error status blocks above rejection notices.
-- **Two-Stage LLM Pipeline:** Uses LLM term extractor chain followed by a strict regex/fuzz.WRatio Python gatekeeper.
+- **Direct Match Bypass:** Instantly matches raw English queries to bypass Stage 1 translation overhead.
+- **LASER FOCUS Output:** Focuses strictly on requested properties without dumping unrelated context attributes.
 - **Unmatched Query Logging:** Writes raw user queries and extracted terms into `missing_minerals.txt`.
 - **Metadata Filtered Search:** Performs exact metadata lookup (`filter={"Name": target_mineral}`).
 - **Real-time Output Streaming:** `st.write_stream` prevents interface freezing and provides low-latency chat updates.
@@ -204,7 +206,7 @@ The system behavior can be tuned by modifying parameters globally inside `minera
 | `EMBEDDING_MODEL_NAME` | `paraphrase-multilingual-MiniLM-L12-v2` | HuggingFaceEmbeddings | Multilingual sentence transformer model for dense vector generation. |
 | `LOCAL_CSV_PATH` | `minerals.csv` | Data Ingestion | Path to local CSV file to prioritize over Kaggle download. |
 | `fuzzy scorer` | `fuzz.WRatio (score >= 80)` | Fuzzy Matcher (`thefuzz`) | Single-pass weighted ratio scorer for matching name variations. |
-| `translator_chain` | `translator_prompt \| llm` | Two-Stage Pipeline | Stage 1 LLM chain for translating and extracting formal English mineral names. |
+| `translator_chain` | `translator_prompt \| llm` | Two-Stage Pipeline | Stage 1 minimal LLM chain for translating non-English or commercial terms. |
 | `filter` | `{"Name": target_mineral}` | Chroma VectorDB | Metadata filtering restricting vector lookup strictly to identified mineral. |
 | `k` | `3` | Chroma VectorDB | Maximum document snippet count retrieved per query. |
 | `model` | `phi3` | ChatOllama | Target local LLM backend optimized for 4GB VRAM. |
@@ -214,26 +216,28 @@ The system behavior can be tuned by modifying parameters globally inside `minera
 
 ## Implementation Code Snippet
 
-Below is the Streamlit UI streaming and logging logic:
+Below is the Direct Match Bypass and LASER FOCUS logic:
 
 ```python
-# In mineral_rag.py
-def log_missing_mineral(raw_query: str, extracted_term: str = ""):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_line = f'[{timestamp}] Raw Query: "{raw_query}" | Extracted Term: "{extracted_term}"\n'
-    with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
-        f.write(log_line)
-
 # In app_ui.py
 def get_response_stream(query: str):
     vectorstore, translator_chain, strict_chain, mineral_names = cached_get_rag_components()
     with st.spinner("Analyzing mineral query..."):
-        translated_query = translator_chain.invoke({"query": query}).strip()
-        target_mineral = extract_target_mineral(translated_query, mineral_names)
-        if not target_mineral:
-            log_missing_mineral(query, translated_query)
-            def empty_response(): yield REJECTION_MESSAGE
-            return empty_response()
+        # Direct Match Bypass check
+        direct_match = extract_target_mineral(query, mineral_names)
+        if direct_match:
+            target_mineral = direct_match
+            translated_query = query
+        else:
+            translated_query = translator_chain.invoke({"query": query}).strip()
+            target_mineral = extract_target_mineral(translated_query, mineral_names)
+
+# In mineral_rag.py (Laser Focus directive)
+strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
+
+STRICT GENERATION RULES:
+1. LASER FOCUS: Output ONLY the exact property or information specifically requested in the Question. Do NOT output unrequested properties or dump the entire context. Do NOT include greetings, introductory prose, conversational filler, or concluding remarks. Start directly with the requested data.
+..."""
 ```
 
 ---

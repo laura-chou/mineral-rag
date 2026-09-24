@@ -180,23 +180,21 @@ def get_rag_components():
     vectorstore, mineral_names = get_or_create_vectorstore(embeddings)
     llm = ChatOllama(model="phi3", temperature=0)
 
-    # --- Stage 1: Translation and Name Extraction Chain ---
-    translation_template = """You are an expert mineralogy term extractor and translator.
-Your ONLY task is to identify and extract the primary target mineral or gemstone from the user's query and output its formal English mineralogical name.
-If the query is in Chinese, a foreign language, or uses commercial gemological names (e.g. 'Ruby', 'Sapphire', 'Emerald', 'Lapis Lazuli', 'Amethyst'), translate and map it directly to its formal scientific mineralogical name (e.g. 'Corundum', 'Corundum', 'Beryl', 'Lazurite', 'Quartz').
-If the input query already contains an English mineral or gemstone name (e.g. 'Boulder Opal'), keep the exact original English name. DO NOT invent, substitute, or replace it with an unrelated mineral name.
-Output EXACTLY the formal English mineral name and nothing else. Do NOT output punctuation, explanations, or additional words.
+    # --- Stage 1: Minimal Translation and Name Extraction Chain ---
+    translation_template = """You are an expert mineralogy translator.
+Identify and extract the primary mineral or gemstone name from the query. If it is in a foreign language, translate it to its English mineral name.
+Output EXACTLY the formal English name and nothing else.
 
 Query: {query}
 Formal English Name:"""
     translator_prompt = ChatPromptTemplate.from_template(translation_template)
     translator_chain = translator_prompt | llm | StrOutputParser()
 
-    # --- Stage 2: Strict Generation Chain (Pure English Prompt with "not specified" output rule) ---
+    # --- Stage 2: Strict Generation Chain with Laser Focus Rule ---
     strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
 
 STRICT GENERATION RULES:
-1. Do NOT include any greetings (e.g., 'Hello', 'Hi'), introductory prose, conversational filler, or concluding remarks. Start directly with the data.
+1. LASER FOCUS: Output ONLY the exact property or information specifically requested in the Question. Do NOT output unrequested properties or dump the entire context. Do NOT include greetings, introductory prose, conversational filler, or concluding remarks. Start directly with the requested data.
 2. If the requested property exists in the Context, output it using a concise Bullet Points format.
 3. If a requested property is missing or invalid in the Context, output:
    - [Property Name]: not specified

@@ -15,9 +15,16 @@ def get_response_stream(query: str):
     vectorstore, translator_chain, strict_chain, mineral_names = cached_get_rag_components()
 
     with st.spinner("Analyzing mineral query..."):
-        translated_query = translator_chain.invoke({"query": query}).strip()
+        # 1. Direct Match Bypass: Check if raw input contains a valid mineral name directly
+        direct_match = extract_target_mineral(query, mineral_names)
+        if direct_match:
+            target_mineral = direct_match
+            translated_query = query
+        else:
+            # Fallback to Stage 1 LLM extraction
+            translated_query = translator_chain.invoke({"query": query}).strip()
+            target_mineral = extract_target_mineral(translated_query, mineral_names)
 
-        target_mineral = extract_target_mineral(translated_query, mineral_names)
         if not target_mineral:
             log_missing_mineral(query, translated_query)
             def empty_response():
