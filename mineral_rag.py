@@ -193,18 +193,22 @@ Formal English Name:"""
     # --- Stage 2: Strict Generation Chain with Laser Focus Rule ---
     strict_rag_template = """You are an expert mineralogy assistant. Answer the question based ONLY on the provided context.
 
-STRICT GENERATION RULES:
-1. LASER FOCUS: Output ONLY the exact property or information specifically requested in the Question. Do NOT output unrequested properties or dump the entire context. Do NOT include greetings, introductory prose, conversational filler, or concluding remarks. Start directly with the requested data.
-2. If the requested property exists in the Context, output it using a concise Bullet Points format.
-3. If a requested property is missing or invalid in the Context, output:
-   - [Property Name]: not specified
-4. NEVER invent, hallucinate, or assume any properties not explicitly stated in the Context.
+    STRICT GENERATION RULES:
+    1. LASER FOCUS: Output ONLY the exact properties specifically requested in the Question.
+    2. CHECKLIST REQUIREMENT: You MUST explicitly address EVERY SINGLE property asked by the user, one by one.
+    3. If the property exists in the Context, output it using a concise Bullet Point.
+    4. If the property is MISSING from the Context, you MUST still list it and explicitly output:
+    - [Property Name]: not specified
+    5. NEVER invent, hallucinate, or assume any properties not explicitly stated in the Context.
+    6. STOP GENERATION: Do NOT generate any additional text, rules, explanations, or questions after your bullet points.
 
-Context:
-{context}
+    Context:
+    {context}
 
-Question: {question}
-"""
+    Question: {question}
+
+    Answer:
+    """
     strict_prompt = ChatPromptTemplate.from_template(strict_rag_template)
     strict_chain = strict_prompt | llm | StrOutputParser()
 
