@@ -70,22 +70,23 @@ mineral-rag/
 └── requirements.txt         # Declared Python dependencies
 ```
 
-## Searchable Mineral Properties
+## Searchable Mineral Properties & Data Source
 
-The system supports accurate querying for the following physical, optical, and chemical attributes:
+The mineralogy database (`minerals.csv`) used by this local RAG system is sourced from Kaggle's [Comprehensive Database of Minerals](https://www.kaggle.com/datasets/vinven7/comprehensive-database-of-minerals).
 
-* **Crystal Structure**
-* **Mohs Hardness**
-* **Diaphaneity**
-* **Specific Gravity**
-* **Optical**
-* **Refractive Index**
-* **Dispersion**
-* **Hydrated Water**
-* **Molar Mass**
-* **Molar Volume**
-* **Calculated Density**
-* **Chemical Composition**
+The system supports accurate vector retrieval and strict generation across the following core attributes:
+- Crystal Structure
+- Mohs Hardness
+- Diaphaneity
+- Specific Gravity
+- Optical
+- Refractive Index
+- Dispersion
+- Hydrated Water
+- Molar Mass
+- Molar Volume
+- Calculated Density
+- Chemical Composition
 
 ## Demo
 
