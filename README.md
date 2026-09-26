@@ -43,16 +43,40 @@ python app_cli.py
 
 ```mermaid
 graph TD
-    A([User Query]) --> B{Direct Match in CSV?}
-    B -- Yes --> E[Chroma DB Metadata Search]
-    B -- No --> C[Stage 1: Ollama Phi-3 Term Extraction]
-    C --> D{Valid Mineral Name?}
-    D -- No --> F[Log to missing_minerals.txt & Decline]
-    D -- Yes --> E
-    E --> G{Data Found?}
-    G -- No --> F
-    G -- Yes --> H[Stage 2: Ollama Phi-3 Strict Generation]
-    H --> I([Stream Response to UI/CLI])
+    Start([User Input Query]) --> DirectMatch{Direct Match Bypass: <br/> Exact Match in CSV?}
+
+    %% Direct Match Path
+    DirectMatch -- Yes --> Stage3[Stage 3: Filter Chroma DB <br/> filter='Name': target_mineral]
+
+    %% Stage 1 & 2 Path
+    DirectMatch -- No --> Stage1[Stage 1: translator_chain <br/> Extract Formal English Name]
+    Stage1 --> Stage2{Stage 2: Gatekeeper Check <br/> Fuzzy/Regex Valid Name?}
+
+    %% Failure Path
+    Stage2 -- No --> LogMissing[Log query to missing_minerals.txt]
+    LogMissing --> Reject([Output REJECTION_MESSAGE <br/> Halt Execution])
+
+    %% Success Path
+    Stage2 -- Yes --> Stage3
+
+    %% Stage 3 Check
+    Stage3 --> DocsFound{Docs Found <br/> in Chroma DB?}
+    DocsFound -- No --> LogMissing
+    DocsFound -- Yes --> Stage4[Stage 4: strict_chain <br/> Checklist Requirement & Stop Generation]
+
+    %% Final Output
+    Stage4 --> Final([Output Grounded Answer])
+
+    %% Styling
+    classDef process fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    classDef check fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+    classDef error fill:#ffebee,stroke:#d32f2f,stroke-width:2px;
+    classDef endpoint fill:#f5f5f5,stroke:#9e9e9e,stroke-width:2px;
+
+    class Stage1,Stage3,Stage4 process;
+    class DirectMatch,Stage2,DocsFound check;
+    class LogMissing,Reject error;
+    class Start,Final endpoint;
 ```
 
 ## Project Directory Structure
